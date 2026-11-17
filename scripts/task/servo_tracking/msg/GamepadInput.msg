@@ -1,0 +1,14 @@
+std_msgs/Header header
+string guid
+string source
+string device_name
+string connection_type
+uint64 generation
+uint64 sequence
+bool connected
+bool link_verified
+bool mapping_verified
+float32[4] axes
+int8[4] dpad
+bool lb
+bool b

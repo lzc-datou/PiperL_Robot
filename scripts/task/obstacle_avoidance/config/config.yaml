@@ -1,0 +1,68 @@
+# 多点虚拟演示：A → B → C → D；仅规划回放，不用于实机。
+version: 1
+settings:
+  frame_id: base_link
+  tcp_link: tcp_link
+  group: arm
+  velocity_scaling: 0.15
+  acceleration_scaling: 0.15
+  planning_time: 15.0
+  planning_attempts: 1
+  hold_seconds: 0.0
+points:
+- {name: A, type: joint, hold_seconds: 0.5,
+   joints_rad: [-1.780463, 1.547112, -0.691569, -0.053372, -1.534668, 1.363381]}
+- name: B
+  type: joint
+  joints_rad:
+  - -1.5
+  - 1.0
+  - -1.0
+  - 0.0
+  - 0.5
+  - 0.0
+- {name: C, type: joint, hold_seconds: 0.5,
+   joints_rad: [-1.412879, 1.016986, -0.442668, -1.375477, -1.148427, 2.449517]}
+- name: D
+  type: joint
+  joints_rad:
+  - -0.5
+  - 1.0
+  - -1.0
+  - 0.0
+  - 0.5
+  - 0.0
+- {name: E, type: joint, hold_seconds: 0.5,
+   joints_rad: [-0.019478, 1.016986, -0.442668, -0.413660, -0.450784, 2.253464]}
+
+- name: F
+  type: joint
+  joints_rad:
+  - 0.5
+  - 1.0
+  - -1.0
+  - 0.0
+  - 0.5
+  - 0.0
+- {name: G, type: joint, hold_seconds: 0.5,
+   joints_rad: [1.188988, 1.204836, -1.682916, -0.383606, 1.166491, -1.369822]}
+
+- name: H
+  type: joint
+  joints_rad:
+  - 1.5
+  - 1.0
+  - -1.0
+  - 0.0
+  - 0.5
+  - 0.0
+- name: I
+  type: joint
+  joints_rad:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+

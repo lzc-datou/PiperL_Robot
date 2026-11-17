@@ -1,0 +1,20 @@
+# Local software bounds for the gamepad tool; not certified hardware limits.
+control_rate_hz: 100.0
+ui_refresh_hz: 20.0
+deadzone: 0.08
+neutral_dwell_s: 0.15
+response_exponent: 1.5
+linear_speed_max: 0.05
+angular_speed_max: 0.25
+joint_speed: 0.30
+joint_acceleration: 0.50
+default_speed_scale: 0.20
+dpad_scale: 0.35
+input_timeout_s: 0.20
+gui_timeout_s: 0.30
+command_timeout_s: 0.15
+stop_settle_window_s: 0.30
+stop_joint_span_rad: 0.003
+stop_confirm_timeout_s: 3.0
+# Must remain false until actual link loss behavior is observed per connection mode.
+real_link_verified: false

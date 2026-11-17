@@ -1,0 +1,6 @@
+<library path="piper_servo_panel">
+  <class name="piper_servo_tracking/Panel" type="piper_servo_tracking::Panel" base_class_type="rviz_common::Panel"><description>六轴伺服操作面板</description></class>
+  <class name="piper_servo_tracking/TimeCompatibleGroup" type="piper_servo_tracking::TimeCompatibleGroup" base_class_type="rviz_common::Display"><description>RViz frame time compatibility</description></class>
+  <class name="piper_servo_tracking/WorkspaceDisplay" type="piper_servo_tracking::WorkspaceDisplay" base_class_type="rviz_common::Display"><description>可达范围曲面，不遮挡鼠标拾取</description></class>
+  <class name="piper_servo_tracking/TargetGhostDisplay" type="piper_servo_tracking::TargetGhostDisplay" base_class_type="rviz_common::Display"><description>黄色目标机械臂虚影，不遮挡目标交互</description></class>
+</library>

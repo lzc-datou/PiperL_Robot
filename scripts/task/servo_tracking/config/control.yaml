@@ -1,0 +1,48 @@
+# ROS-independent Cartesian controller. Input: verified base_link pose7 + raw FK
+# and original monotonic target receipt time. Output: TCP [m/s, rad/s] in base_link.
+algorithm: pi
+# Release braking uses source-timed actual velocity; P gains remain unchanged.
+settling_linear_prediction_time: 0.18
+settling_angular_prediction_time: 0.18
+measured_velocity_filter_time_constant: 0.03
+measured_velocity_timeout: 0.10
+hold_linear_velocity_tolerance: 0.003
+hold_angular_velocity_tolerance: 0.02
+linear_speed: 0.30
+angular_speed: 1.50
+position_tolerance: 0.001
+orientation_tolerance: 0.01
+velocity_filter_time_constant: 0.04
+derivative_filter_time_constant: 0.04
+# No new verified target: feedforward fades continuously to exactly zero by .10s.
+feedforward_hold_time: 0.04
+feedforward_validity: 0.10
+# Integral state caps have units m*s and rad*s; conditional anti-windup also applies.
+integral_position_limit: 0.05
+integral_orientation_limit: 0.20
+# PI grows I only with fresh, timestamp-matched downstream capability feedback.
+# Source freshness and allowed command-to-execution latency are separate clocks.
+execution_feedback_timeout: 0.10
+execution_command_timeout: 0.50
+# Downstream saturation qualification: seconds, m/s, rad/s and relative ratio.
+# stable_window >= execution_feedback_timeout >= saturation_window.
+observer_stable_window: 0.16
+observer_saturation_window: 0.08
+observer_linear_noise: 0.005
+observer_angular_noise: 0.025
+observer_relative_noise: 0.10
+antiwindup_tracking_time_constant: 0.20
+# Default back-calculation removes existing windup without creating opposite I.
+# tracking selects conventional back-calculation, which can introduce an I bias.
+antiwindup_mode: clamped_tracking
+# Optional TCP acceleration caps (m/s², rad/s²). Official joint acceleration is separate.
+linear_acceleration: null
+angular_acceleration: null
+min_dt: 0.001
+max_dt: 0.10
+gains:
+  p: {position_gain: 2.0, orientation_gain: 2.0}
+  pi: {position_gain: 2.0, orientation_gain: 2.0, position_i_gain: 0.8, orientation_i_gain: 0.8}
+  pd: {position_gain: 2.0, orientation_gain: 2.0, position_d_gain: 0.08, orientation_d_gain: 0.08}
+  feedforward_p: {position_gain: 4.0, orientation_gain: 4.0}
+  feedforward_pd: {position_gain: 4.0, orientation_gain: 4.0, position_d_gain: 0.08, orientation_d_gain: 0.08}

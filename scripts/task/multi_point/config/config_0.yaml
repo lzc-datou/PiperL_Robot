@@ -1,0 +1,51 @@
+version: 1
+settings:
+  frame_id: base_link
+  tcp_link: tcp_link
+  group: arm
+  velocity_scaling: 0.3
+  acceleration_scaling: 0.3
+  hold_seconds: 0.5
+  return_to_initial: false
+  approach_offset_m: [0.0, 0.0, 0.0]
+# Paste recorded point entries below. Empty intentionally: no unverified motion targets.
+points: 
+  - {name: point_001_joint, type: joint, hold_seconds: 0.5,
+    joints_rad: [0.108123, 0.122592, -0.072763, -0.254521, 0.380255, 0.292762]}
+  - {name: point_002_pose, type: pose, hold_seconds: 0.5, frame_id: base_link,
+    position_m: [0.062025, 0.008294, 0.424935],
+    orientation_xyzw: [-0.004902, 0.662128, 0.061958, 0.746809]}
+  - {name: point_003_pose, type: pose, hold_seconds: 0.5, frame_id: base_link,
+   position_m: [0.112927, 0.020462, 0.515140],
+   orientation_xyzw: [-0.021774, 0.846297, 0.057634, 0.529137]}
+  - {name: point_004_joint, type: joint, hold_seconds: 0.5,
+   joints_rad: [1.409650, 0.237260, -1.609508, -1.421396, 1.466338, 0.110235]}
+  - {name: point_005_pose, type: pose, hold_seconds: 0.5, frame_id: base_link,
+   position_m: [0.094777, 0.226713, 0.544964],
+   orientation_xyzw: [-0.193696, 0.601700, 0.209968, 0.745890]}
+  - {name: point_006_joint, type: joint, hold_seconds: 0.5,
+   joints_rad: [2.084063, 1.420611, -1.501227, -1.579226, 0.761051, 1.296902]}
+  - {name: point_007_pose, type: pose, hold_seconds: 0.1, frame_id: base_link,
+   position_m: [0.054802, 0.209556, 0.796360],
+   orientation_xyzw: [-0.345798, 0.373771, 0.465219, 0.724079]}
+  - {name: point_008_pose, type: pose, hold_seconds: 0.5, frame_id: base_link,
+   position_m: [0.379730, -0.118340, 0.367857],
+   orientation_xyzw: [0.000373, 0.676060, 0.000430, 0.736847]}
+  - {name: point_009_pose, type: pose, hold_seconds: 0.5, frame_id: base_link,
+   position_m: [-0.011358, 0.288537, 0.175316],
+   orientation_xyzw: [-0.442634, 0.530328, 0.373455, 0.619160]}
+  - {name: point_010_pose, type: pose, hold_seconds: 0.5, frame_id: base_link,
+   position_m: [0.188271, -0.082282, 0.375845],
+   orientation_xyzw: [-0.000874, 0.675767, 0.000494, 0.737114]}
+  # 零位
+  - {name: point_home_joint, type: joint, hold_seconds: 0.5,
+   joints_rad: [0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000]}
+
+
+  
+
+
+
+
+
+

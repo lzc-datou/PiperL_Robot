@@ -1,0 +1,24 @@
+{
+  "created_at": "2026-11-09T16:16:09.667130+08:00",
+  "source": "Fresh GitHub clones; no old SDK/model patches",
+  "repositories": [
+    {
+      "name": "agx_arm_ros",
+      "path": "piperl_ws/src/agx_arm_ros",
+      "url": "https://github.com/agilexrobotics/agx_arm_ros.git",
+      "commit": "505111406c9b9f8e8bce377d9d50c04fc8590b02"
+    },
+    {
+      "name": "agx_arm_urdf",
+      "path": "piperl_ws/src/agx_arm_ros/src/agx_arm_description/agx_arm_urdf",
+      "url": "https://github.com/agilexrobotics/agx_arm_urdf.git",
+      "commit": "680fa925cd00db7e2628563d2edc5540963045de"
+    },
+    {
+      "name": "pyAgxArm",
+      "path": "external/pyAgxArm",
+      "url": "https://github.com/agilexrobotics/pyAgxArm.git",
+      "commit": "d90e234ba8e408cfa964b38aa9120b3131fc9f85"
+    }
+  ]
+}

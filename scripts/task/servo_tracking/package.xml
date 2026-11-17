@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>piper_servo_tracking</name><version>0.1.0</version>
+  <description>Six-axis RViz Servo task with isolated simulation and real feedback modes.</description>
+  <maintainer email="local@example.com">PiperL project</maintainer><license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend><buildtool_depend>ament_cmake_python</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
+  <depend>rclcpp</depend><depend>rviz_common</depend><depend>pluginlib</depend>
+  <depend>rviz_default_plugins</depend>
+  <depend>moveit_ros_visualization</depend>
+  <depend>std_msgs</depend><depend>std_srvs</depend><depend>sensor_msgs</depend>
+  <exec_depend>rclpy</exec_depend><exec_depend>moveit_servo</exec_depend>
+  <exec_depend>moveit_msgs</exec_depend><exec_depend>interactive_markers</exec_depend>
+  <exec_depend>agx_arm_moveit</exec_depend><exec_depend>agx_arm_ctrl</exec_depend>
+  <exec_depend>python3-numpy</exec_depend><exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-skimage</exec_depend>
+  <exec_depend>python3-yaml</exec_depend><exec_depend>diagnostic_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend><exec_depend>trajectory_msgs</exec_depend>
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>control_msgs</exec_depend><exec_depend>unique_identifier_msgs</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

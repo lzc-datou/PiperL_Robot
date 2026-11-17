@@ -1,0 +1,3 @@
+pyAgxArm @ file:///home/lzc/ROS2_Workspace/PiperL_Robot/external/pyAgxArm
+python-can==4.6.1
+wrapt==1.16.0

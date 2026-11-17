@@ -1,0 +1,72 @@
+Panels:
+  - Class: piper_servo_tracking/Panel
+    Name: 六轴伺服
+Visualization Manager:
+  Class: ""
+  Global Options:
+    Background Color: 36; 40; 46
+    Fixed Frame: base_link
+    Frame Rate: 30
+  Displays:
+    - Class: piper_servo_tracking/TimeCompatibleGroup
+      Name: Servo displays
+      Value: true
+      Displays:
+        - Class: rviz_default_plugins/Grid
+          Name: Grid
+          Value: true
+          Cell Size: 0.1
+          Plane Cell Count: 20
+          Color: 105; 110; 118
+        - Class: rviz_default_plugins/RobotModel
+          Name: Robot
+          Value: true
+          Description Source: Topic
+          Description Topic:
+            Value: /piper_servo/robot_description
+            Durability Policy: Transient Local
+            Reliability Policy: Reliable
+          Visual Enabled: true
+          Collision Enabled: false
+          Alpha: 1.0
+        - Class: piper_servo_tracking/TargetGhostDisplay
+          Name: Target robot (yellow)
+          Value: true
+          Robot Description: robot_description
+          Robot State Topic: /piper_servo/target_robot_state
+          Robot Alpha: 0.45
+          Show Highlights: true
+          Show All Links: true
+          Visual Enabled: true
+          Collision Enabled: false
+        - Class: rviz_default_plugins/InteractiveMarkers
+          Name: TCP target
+          Value: true
+          Interactive Markers Namespace: /piper_servo/target
+          Show Axes: false
+          Show Descriptions: false
+          Show Visual Aids: true
+        - Class: piper_servo_tracking/WorkspaceDisplay
+          Name: Workspace approximation
+          Value: true
+          Topic:
+            Value: /piper_servo/workspace
+            Durability Policy: Transient Local
+            Reliability Policy: Reliable
+            Depth: 1
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 2.6
+      Focal Point: {X: 0.05, Y: 0.0, Z: 0.25}
+      Pitch: 0.45
+      Yaw: 0.7
+      Target Frame: base_link
+  Value: true
+Window Geometry:
+  Width: 1280
+  Height: 850

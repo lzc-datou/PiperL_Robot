@@ -1,0 +1,9 @@
+float64[6] joints
+float64 speed_scale
+string purpose
+uint64 target_revision
+bool auto_execute
+---
+bool success
+string message
+string plan_id

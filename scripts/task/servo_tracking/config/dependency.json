@@ -1,0 +1,8 @@
+{
+  "package": "ros-jazzy-moveit-servo",
+  "version": "2.12.4-1noble.20261006.040508",
+  "architecture": "amd64",
+  "source": "http://packages.ros.org/ros2/ubuntu",
+  "sha256": "3abc60814f191fc69dca87688c4cc71ac2e63c1f4d86fb6cb1f22a189a15cb2f",
+  "prefix": ".deps/servo/opt/ros/jazzy"
+}

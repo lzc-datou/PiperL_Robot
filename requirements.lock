@@ -1,0 +1,4 @@
+python-can==4.6.1
+typing-extensions==4.10.0
+packaging==24.0
+wrapt==1.16.0

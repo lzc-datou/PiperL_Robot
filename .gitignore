@@ -1,0 +1,15 @@
+.venv-piperl/
+piperl_ws/build/
+piperl_ws/install/
+piperl_ws/log/
+outputs/
+__pycache__/
+*.pyc
+
+# 本机工具配置、凭据与可重新下载的依赖缓存
+/.aws/
+/.codex/
+/.agents/
+/.deps/
+/external/wheels/
+.pytest_cache/

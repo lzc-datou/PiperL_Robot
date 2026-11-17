@@ -1,0 +1,8 @@
+enabled: true
+objects:
+  - id: box
+    shape: box
+    frame_id: base_link
+    dimensions_m: [0.10, 0.10, 0.20]
+    position_m: [0.24, 0.0, 0.44]
+    orientation_xyzw: [0.0, 0.0, 0.0, 1.0]

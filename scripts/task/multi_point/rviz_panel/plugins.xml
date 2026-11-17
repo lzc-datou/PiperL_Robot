@@ -1,0 +1,8 @@
+<library path="piper_task_panel">
+  <class name="piper_multi_point_rviz/TaskPanel" type="piper_multi_point_rviz::TaskPanel" base_class_type="rviz_common::Panel">
+    <description>多点任务：加载配置、规划预览、确认执行和停止任务。</description>
+  </class>
+  <class name="piper_multi_point_rviz/TimeCompatibleGroup" type="piper_multi_point_rviz::TimeCompatibleGroup" base_class_type="rviz_common::Display">
+    <description>Preserves upstream displays and corrects RViz 14.1.23 frame-time units.</description>
+  </class>
+</library>

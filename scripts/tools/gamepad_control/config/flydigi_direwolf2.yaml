@@ -1,0 +1,17 @@
+name_hint: flydigi
+# Linux evdev codes vary by USB/receiver firmware. These are an explicit starter
+# profile, not a claim of tested hardware indices; input mode reports actual values.
+evdev:
+  axes:
+    left_x: {code: ABS_X, invert: false}
+    left_y: {code: ABS_Y, invert: false}
+    right_x: {code: ABS_RX, invert: false}
+    right_y: {code: ABS_RY, invert: false}
+  buttons:
+    lb: BTN_TL
+    b: BTN_EAST
+  dpad:
+    up: ABS_HAT0Y:-1
+    down: ABS_HAT0Y:1
+    left: ABS_HAT0X:-1
+    right: ABS_HAT0X:1

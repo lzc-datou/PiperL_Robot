@@ -1,0 +1,65 @@
+enabled: true
+objects:
+- id: barrier_1
+  shape: box
+  frame_id: base_link
+  dimensions_m:
+  - 0.07
+  - 0.07
+  - 0.18
+  position_m:
+  - 0.129673
+  - -0.201953
+  - 0.44
+  orientation_xyzw:
+  - 0.0
+  - 0.0
+  - -0.4794255404745245
+  - 0.8775825608686114
+- id: barrier_2
+  shape: box
+  frame_id: base_link
+  dimensions_m:
+  - 0.07
+  - 0.07
+  - 0.18
+  position_m:
+  - 0.24
+  - 0.0
+  - 0.44
+  orientation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+- id: barrier_3
+  shape: box
+  frame_id: base_link
+  dimensions_m:
+  - 0.07
+  - 0.07
+  - 0.18
+  position_m:
+  - 0.129673
+  - 0.201953
+  - 0.44
+  orientation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.4794255404745245
+  - 0.8775825608686114
+- dimensions_m:
+  - 0.1
+  - 0.05
+  frame_id: base_link
+  id: object_1
+  orientation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  position_m:
+  - -0.07185321301221848
+  - -0.3218526542186737
+  - 0.4172144830226898
+  shape: cylinder

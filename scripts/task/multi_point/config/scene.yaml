@@ -1,0 +1,10 @@
+# Disabled example. All dimensions/positions are in metres, relative to base_link.
+# When enabled, manages only objects with prefix multi_point/; other objects remain.
+enabled: false
+objects:
+  - id: virtual_box
+    shape: box
+    dimensions_m: [0.10, 0.10, 0.15]
+    frame_id: base_link
+    position_m: [0.35, 0.0, 0.20]
+    orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
