@@ -65,4 +65,10 @@ bash scripts/piperl/run.sh python scripts/piperl/verify_sources.py
 源码重建：按 source_versions.json 中 URL 克隆，检出对应 commit；ROS 仓库执行 git submodule update --init --recursive。不要用 submodule update --remote 改变锁定模型。
 尚未实机验收：Piper-L 模型与现场零位/控制器限位的一致性、实际到位和停止行为。
 
+下载方式：
+
+```Shell
+git clone --recurse-submodules https://github.com/lzc-datou/PiperL_Robot.git
+```
+
 验证结果：[软件基线报告](outputs/validation/report.json)；[Servo 验证记录](scripts/task/servo_tracking/VALIDATION.md)。
