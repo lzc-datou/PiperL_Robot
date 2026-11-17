@@ -5,6 +5,7 @@
 - [多点运动任务](scripts/task/multi_point/README.md)
 - [RViz 六轴伺服（纯仿真 / 实机）](scripts/task/servo_tracking/README.md)
 - [项目结构与控制接口：模块职责、算法输入输出、参数优先级](docs/项目结构与控制接口.md)
+- [RealSense D405 公开资料：硬件、SDK、ROS 2、标定与应用](docs/RealSense-D405公开资料.md)
 - [独立笛卡尔控制参数：P / PI / PD / FF+P / FF+PD](scripts/task/servo_tracking/config/control.yaml)
 - [多点、多障碍物路径对比](scripts/task/obstacle_avoidance/README.md)
 - [实用工具目录](scripts/tools/README.md)

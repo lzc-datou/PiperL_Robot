@@ -1,0 +1,12 @@
+{
+  "repositories": [
+    {"name": "handeye_calibration_ros", "url": "https://github.com/agilexrobotics/handeye_calibration_ros.git", "branch": "humble", "commit": "3f8e29606f91b2e6c46457961af03154f7ad3809"},
+    {"name": "aruco_ros", "url": "https://github.com/pal-robotics/aruco_ros.git", "branch": "humble-devel", "commit": "2872a002ce29362896ed55e28e00abb763335235"},
+    {"name": "realsense-ros", "url": "https://github.com/realsenseai/realsense-ros.git", "branch": "4.59.2", "commit": "960306819f45006ca3f903aa046bed32c509679a"}
+  ],
+  "debs": [
+    {"package": "librealsense2-dev", "version": "2.59.2-0~realsense.20561", "file": "librealsense2-dev_2.59.2-0~realsense.20561_amd64.deb", "sha256": "9b6814b943101ae0f492316d096cce3ba3bdce78d0bc2b145ac1fb5d65f63629"},
+    {"package": "ros-jazzy-tf-transformations", "version": "1.1.1-1noble.20260225.142630", "file": "ros-jazzy-tf-transformations_1.1.1-1noble.20260225.142630_amd64.deb", "sha256": "512cf4bb588fef1679160f3d1227556e581a9742319b6586e9db5546cbe77d08"},
+    {"package": "python3-transforms3d", "version": "0.4.1+ds-1", "file": "python3-transforms3d_0.4.1+ds-1_all.deb", "sha256": "c1af63aebb6de5ec9813ecc839f1163e46f284d817a301bfa8740490ede4da52"}
+  ]
+}

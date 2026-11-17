@@ -1,0 +1,14 @@
+# 眼在手上：相机随末端运动，ArUco 标记固定在桌面。
+marker_id: 582
+# 打印后用尺/卡尺测量黑色方块外边长，单位米；不包含白边。
+# 填入实测值，例如实际为 69.6 mm 时填 0.0696，不要照抄示例。
+marker_size_m: null
+camera_name: handeye_d405
+camera_namespace: handeye
+camera_serial: ''
+color_profile: 640x480x30
+robot_pose_topic: /feedback/tcp_pose
+marker_pose_topic: /aruco_single/pose
+base_frame: base_link
+end_frame: tcp_link
+min_samples: 20
