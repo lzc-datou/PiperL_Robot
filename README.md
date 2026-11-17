@@ -23,7 +23,7 @@
 
 ```bash
 # 先克隆自己的项目仓库，递归获取锁定版本的官方依赖
-git clone --recurse-submodules https://github.com/<你的用户名>/PiperL_Robot.git
+git clone --recurse-submodules https://github.com/lzc-datou/PiperL_Robot.git
 cd PiperL_Robot
 bash scripts/piperl/bootstrap.sh --online
 bash scripts/piperl/run.sh python scripts/piperl/doctor.py
