@@ -1,75 +1,46 @@
 # PiperL_Robot
 
-基于 GitHub 全新获取的 AgileX 官方 ROS 2、SDK 和模型建立的 Piper-L 基线。
+PiPER-L 机械臂控制项目，基于 AgileX 官方 ROS 2、MoveIt 2 和 pyAgxArm。日常流程是：先用手柄操作虚拟机械臂，再用控制面板准备硬件，最后进入实机控制。
 
-- [多点运动任务](scripts/task/multi_point/README.md)
-- [RViz 六轴伺服（纯仿真 / 实机）](scripts/task/servo_tracking/README.md)
-- [项目结构与控制接口：模块职责、算法输入输出、参数优先级](docs/项目结构与控制接口.md)
-- [RealSense D405 公开资料：硬件、SDK、ROS 2、标定与应用](docs/RealSense-D405公开资料.md)
-- [独立笛卡尔控制参数：P / PI / PD / FF+P / FF+PD](scripts/task/servo_tracking/config/control.yaml)
-- [多点、多障碍物路径对比](scripts/task/obstacle_avoidance/README.md)
-- [实用工具目录](scripts/tools/README.md)
-- [飞智冰原狼 2 手柄工具](scripts/tools/gamepad_control/README.md)（离线界面、只读 evdev、MoveIt Servo/mock 仿真；实体手柄与实机仍待验收）
-- [手动命令：急停/使能、监控、范围记录、CAN、驱动与 MoveIt](docs/手动命令.md)
-- [官方 ROS README](piperl_ws/src/agx_arm_ros/README.md)
-- [官方 CAN 配置](piperl_ws/src/agx_arm_ros/docs/CAN_USER.md)
-- [伺服参数与关节限速](scripts/task/servo_tracking/README.md#文件与参数)
-- [源码提交记录](config/source_versions.json)
+## 用手柄控制机械臂
 
-环境：Ubuntu 24.04 / ROS 2 Jazzy / 系统 Python 3.12；共享系统 ROS/APT，项目独立 `.venv-piperl`（system-site-packages）与 `piperl_ws`。不使用 Conda，不修改 .bashrc 或全局 pip。默认 Domain 43、仅本机发现；每个终端都通过 run.sh 进入。
+1. 首次使用或换电脑，完成 [环境准备](docs/环境准备.md)。
+2. 按 [手柄连接与仿真指南](scripts/tools/gamepad_control/README.md) 启动虚拟机械臂。在同一窗口选择“单轴控制”或“笛卡尔控制”，确认方向、LB/B、模式切换和断线停止。
+3. 结束旧控制程序，使用 [CAN 控制面板](scripts/tools/control_panel/README.md) 连接 CAN，点击“机械臂使能”，等待反馈确认。
+4. 再按 [首次实机操作](scripts/tools/gamepad_control/REAL_MACHINE.md) 启动手柄控制。从低速单轴开始，核对实物运动与停止，再使用笛卡尔控制。
 
-官方源码位于 `piperl_ws/src/agx_arm_ros/`，项目环境入口位于 `scripts/piperl/`，任务与工具分别位于 `scripts/task/`、`scripts/tools/`。Servo 的 [核心控制器](scripts/task/servo_tracking/cartesian_control.py) 无 ROS 依赖，输入已验证的目标/实测 TCP 位姿与单调时间，输出基坐标系 TCP 速度；算法参数独立于硬件和任务参数。完整目录及接口约定见上方架构文档，现有多点和避障任务保留原官方执行链路。
+默认单轴模式选中 J1。按住 LB 允许运动，松开 LB 停止；B 停止并锁定，恢复需明确操作。两种控制模式的映射、速度和切换条件见 [手柄参数参考](scripts/tools/gamepad_control/REFERENCE.md)。
 
-首次联网准备或在新目录重新创建：
+面板使能在实机控制栈启动前完成，使官方驱动启动时读取到已使能状态。急停恢复先结束旧控制会话和驱动，再由面板重置、使能，随后重启控制。面板可以保留用于阻尼急停，运动会话中不要用它回零或重置。回零不是启动必需步骤。
 
-```bash
-# 先克隆自己的项目仓库，递归获取锁定版本的官方依赖
-git clone --recurse-submodules https://github.com/lzc-datou/PiperL_Robot.git
-cd PiperL_Robot
-bash scripts/piperl/bootstrap.sh --online
-bash scripts/piperl/run.sh python scripts/piperl/doctor.py
-```
+## 其他操作入口
 
-本项目通过两个 Git 子模块引用官方 SDK（`external/pyAgxArm`）和 ROS 仓库（`piperl_ws/src/agx_arm_ros`）；模型 `agx_arm_urdf` 是 ROS 仓库内部的子模块。主仓库记录具体提交版本，官方源码保留各自的来源和许可证。若克隆时没有递归获取，进入项目后执行 `git submodule update --init --recursive`。从 GitHub 下载主仓库 ZIP 不包含子模块源码，应使用上述克隆方式。
+| 目标 | 指南 | 硬件范围 |
+| --- | --- | --- |
+| 检查手柄、操作虚拟机械臂 | [手柄控制](scripts/tools/gamepad_control/README.md) | `input`、`sim` 不连接机械臂 |
+| 手柄操作实机 | [首次实机操作](scripts/tools/gamepad_control/REAL_MACHINE.md) | `real` 连接实机 |
+| CAN 连接、使能、重置、阻尼急停 | [控制面板](scripts/tools/control_panel/README.md) | 正常模式操作 CAN；`--demo` 离线 |
+| 鼠标拖动末端、单点伺服 | [RViz 六轴伺服](scripts/task/servo_tracking/README.md) | 按 `sim`、`real` 区分 |
+| 官方单点 Plan/Execute | [单点规划](scripts/task/single_point/README.md) | 实机入口连接；另有离线入口 |
+| 多点连续规划与执行 | [多点任务](scripts/task/multi_point/README.md) | 实机反馈与官方执行链 |
+| 路径对比、虚拟障碍物编辑 | [避障任务](scripts/task/obstacle_avoidance/README.md) | 纯预览不连接；交互执行连接 |
+| 关节监控、范围记录、点位保存 | [监控工具](scripts/tools/monitoring/README.md) | 被动读取硬件反馈 |
+| PiPER-L 与 D405 眼在手上标定 | [手眼标定](scripts/tools/handeye_calibration/README.md) | 相机与实机采样，不自动运动 |
 
-拉取主项目更新后执行 `git submodule update --init --recursive`，使依赖与主项目锁定版本一致。主动升级官方依赖时，需同步更新 `config/source_versions.json`，运行 `python3 scripts/piperl/verify_sources.py`，再一起提交版本记录和子模块指针。子模块内的修改需要在对应仓库提交并推送到可访问的远程仓库；若使用自己的 fork，应同时更新 `.gitmodules` 中的 URL。
+同一机械臂同时只运行一套运动控制栈。不同 ROS Domain 仍共享物理 CAN。软件停止和面板阻尼急停均不代替现场物理急停。
 
-主仓库忽略虚拟环境、构建与运行输出、本机工具配置、wheel 缓存和 `.deps` 依赖缓存；这些内容按环境准备说明重新生成。
+## 环境与文档
 
-已有源码、wheel 缓存和系统依赖时可用 `bootstrap.sh --offline`。移机/改路径不要复制虚拟环境和 build/install/log，应重新创建与构建。系统 ROS、NumPy、SciPy、PyYAML、colcon 等来自 APT；当前版本另存 config/system_packages.txt，不把共享系统依赖宣称为完全隔离。
+项目使用 Ubuntu 24.04、ROS 2 Jazzy、Python 3.12、独立 `.venv-piperl` 和 `piperl_ws`。各终端通过 `scripts/piperl/run.sh` 使用项目环境。默认 ROS Domain 43、仅本机发现，手柄示例使用 Domain 64。
 
-正常使用：
+- [完整文档目录](docs/README.md)
+- [安装、构建、更新与移机](docs/环境准备.md)
+- [目录职责、控制链与配置归属](docs/项目结构与控制接口.md)
+- [鼠标 Servo 算法与接口](docs/Servo控制接口.md)
+- [官方源码版本](config/source_versions.json)与[官方 ROS 说明](piperl_ws/src/agx_arm_ros/README.md)
 
-```bash
-bash scripts/piperl/activate_can.sh
-bash scripts/piperl/start_moveit.sh
-```
+## 验证范围
 
-也可使用统一操作入口，持续保留官方单点控制和多点任务：
+当前版本的检查结果见 [手柄验证矩阵](scripts/tools/gamepad_control/VALIDATION.md)与 [Servo 验证矩阵](scripts/task/servo_tracking/VALIDATION.md)。历史结果保留原版本和检查范围。
 
-```bash
-bash scripts/piperl/build.sh
-bash scripts/piperl/run.sh python scripts/task/multi_point/run.py --rviz --interactive
-```
-
-已有驱动/MoveIt/RViz 会复用。可加 `--config 路径` 启动时加载任务；终端菜单和独立 RViz“多点任务”面板共用状态。见[操作说明](scripts/task/multi_point/README.md)。
-
-默认 Piper-L、无末端、普通 move_j、SDK 默认速度、关闭自动使能，使用者按手动命令使能。CAN 配置会改变系统接口，ROS Domain 不能隔离同一实体 CAN；旧项目必须先退出。
-
-仅迁移旧项目的被动监控与范围记录工具，保留其不发送 CAN 的回归测试；未迁移旧轨迹执行器、模拟运行入口、SDK/URDF 补丁或业务任务。官方自带 GenericSystem 是其控制链的一部分，保持原样。
-
-```bash
-bash scripts/piperl/run.sh --python-only python -m unittest discover -s tests -v
-bash scripts/piperl/run.sh python scripts/piperl/verify_sources.py
-```
-
-源码重建：按 source_versions.json 中 URL 克隆，检出对应 commit；ROS 仓库执行 git submodule update --init --recursive。不要用 submodule update --remote 改变锁定模型。
-尚未实机验收：Piper-L 模型与现场零位/控制器限位的一致性、实际到位和停止行为。
-
-下载方式：
-
-```Shell
-git clone --recurse-submodules https://github.com/lzc-datou/PiperL_Robot.git
-```
-
-验证结果：[软件基线报告](outputs/validation/report.json)；[Servo 验证记录](scripts/task/servo_tracking/VALIDATION.md)。
+模型动画、手柄读数或软件检查不能代替实机验收。映射、所用连接方式的断线行为、实机平顺性、停止响应及模型与现场零位的一致性，需结合当前版本与实物确认。本机日志和验证产物不随源码克隆分发。

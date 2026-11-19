@@ -3,6 +3,7 @@ import glob
 import fcntl
 import hashlib
 import os
+from pathlib import Path
 import select
 import struct
 import threading
@@ -11,12 +12,13 @@ import time
 EV_KEY, EV_ABS = 1, 3
 ABS_X, ABS_Y, ABS_RX, ABS_RY = 0, 1, 3, 4
 ABS_HAT0X, ABS_HAT0Y = 16, 17
-BTN_EAST, BTN_TL = 0x131, 0x136
+BTN_EAST, BTN_NORTH, BTN_WEST, BTN_TL = 0x131, 0x133, 0x134, 0x136
 ABS_CODES = {'ABS_X': ABS_X, 'ABS_Y': ABS_Y, 'ABS_Z': 2,
              'ABS_RX': ABS_RX, 'ABS_RY': ABS_RY, 'ABS_RZ': 5,
              'ABS_THROTTLE': 6, 'ABS_RUDDER': 7,
              'ABS_HAT0X': ABS_HAT0X, 'ABS_HAT0Y': ABS_HAT0Y}
-KEY_CODES = {'BTN_EAST': BTN_EAST, 'BTN_TL': BTN_TL}
+KEY_CODES = {'BTN_EAST': BTN_EAST, 'BTN_NORTH': BTN_NORTH,
+             'BTN_WEST': BTN_WEST, 'BTN_TL': BTN_TL}
 AXIS_ORDER = ('left_x', 'left_y', 'right_x', 'right_y')
 LEGACY_AXIS_CODES = dict(zip(AXIS_ORDER, ('ABS_X', 'ABS_Y', 'ABS_RX', 'ABS_RY')))
 D_PAD_ORDER = ('up', 'down', 'left', 'right')
@@ -92,11 +94,13 @@ def _profile_mapping(profile):
         axis_codes.append(ABS_CODES[code_name]); inversions.append(invert)
     buttons = evdev.get('buttons', {})
     key_codes = {}
-    for name, fallback in (('lb', 'BTN_TL'), ('b', 'BTN_EAST')):
+    for name, fallback in (('lb', 'BTN_TL'), ('b', 'BTN_EAST'), ('home', 'BTN_WEST')):
         code_name = buttons.get(name, fallback)
         if code_name not in KEY_CODES:
             raise ValueError(f'手柄 profile 按键 {name} 不支持: {code_name}')
         key_codes[name] = KEY_CODES[code_name]
+    if len(set(key_codes.values())) != len(key_codes):
+        raise ValueError('手柄 profile 的 LB、B 和回零按键不能使用同一个键码')
     dpad_profile = evdev.get('dpad', {})
     dpad = []
     for direction, fallback in zip(D_PAD_ORDER,
@@ -123,6 +127,7 @@ class EvdevInput:
         self.lock = threading.Lock()
         self.frame = None
         self.running = False
+        self._stop_event = threading.Event()
         self.generation = 0
         self.sequence = 0
         self.error = '尚未连接手柄'
@@ -130,47 +135,98 @@ class EvdevInput:
         self._fd = None
         self.device = None
 
-    def devices(self):
+    def _supports_profile(self, path):
+        """Inspect capabilities without opening keyboards or requiring device access."""
+        capabilities = Path('/sys/class/input')/Path(path).name/'device/capabilities'
+        def read_bits(name):
+            words = (capabilities/name).read_text().split()
+            # sysfs prints native unsigned-long words, including bare "0"
+            # words. Concatenating them loses the spacing between high bits.
+            width = struct.calcsize('@L') * 8
+            return sum(int(word, 16) << (index * width)
+                       for index, word in enumerate(reversed(words)))
+        try:
+            abs_bits = read_bits('abs')
+            key_bits = read_bits('key')
+        except (OSError, ValueError):
+            return None  # Fall back to the device ioctls if sysfs is unavailable.
+        return (all(abs_bits & (1 << code) for code in self.axis_codes) and
+                all(key_bits & (1 << code) for code in self.key_codes.values()))
+
+    def devices(self, path=None):
         result = []
-        for path in sorted(glob.glob('/dev/input/event*')):
+        denied = []
+        paths = [os.path.realpath(path)] if path else sorted(glob.glob('/dev/input/event*'))
+        error = ''
+        for candidate in paths:
+            if self._supports_profile(candidate) is False:
+                if path:
+                    error = f'所选设备不支持当前手柄轴/按键配置：{candidate}'
+                continue
+            fd = None
             try:
-                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+                fd = os.open(candidate, os.O_RDONLY | os.O_NONBLOCK)
                 info = _device_info(fd)
                 axis_info = [_absinfo(fd, code) for code in self.axis_codes]
                 if all(v is not None and v[2] > v[1] for v in axis_info):
-                    info['path'] = path
+                    info['path'] = candidate
                     result.append(info)
-                os.close(fd)
-            except OSError:
-                pass
-        return result, ''
+                elif path:
+                    error = f'所选设备缺少当前配置需要的四个摇杆轴：{candidate}'
+            except PermissionError:
+                denied.append(candidate)
+            except OSError as exc:
+                if path:
+                    error = f'无法读取指定手柄设备 {candidate}：{exc}'
+            finally:
+                if fd is not None:
+                    os.close(fd)
+        if denied:
+            error = '手柄设备无读取权限：'+', '.join(denied)+'；请检查该手柄设备的访问权限'
+        if not result and not error:
+            error = '系统未发现兼容手柄；请检查 PC 挡位、电源和 USB 数据连接'
+        return result, error
+
+    def _choose_device(self, candidates):
+        hint = str(self.profile.get('name_hint', '')).casefold()
+        named = [d for d in candidates if hint and hint in d['name'].casefold()]
+        if len(named) == 1:
+            return named[0]
+        # XInput devices may identify as an Xbox pad instead of Flydigi.
+        if len(candidates) == 1:
+            return candidates[0]
+        if candidates:
+            paths = ', '.join(d['path'] for d in candidates)
+            raise ValueError('发现多个兼容手柄，请用 --device 指定其中一个：'+paths)
+        return None
 
     def start(self, path=None):
         if self.running:
             return
+        self._stop_event.clear()
         self.running = True
         self._thread = threading.Thread(target=self._read_loop, args=(path,), daemon=True)
         self._thread.start()
 
     def stop(self):
         self.running = False
-        if self._fd is not None:
-            try: os.close(self._fd)
-            except OSError: pass
-            self._fd = None
+        self._stop_event.set()
+        # The reader owns its descriptor. Closing it from the UI can race with
+        # a read/reconnect and accidentally close a newly reused descriptor.
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=.5)
+        with self.lock:
+            self.frame = None
 
     def _read_loop(self, path):
-        preferred = path
-        hint = str(self.profile.get('name_hint', '')).casefold()
         while self.running:
+            fd = None
             try:
-                candidates, _ = self.devices()
-                device = next((d for d in candidates if d['path'] == preferred), None) if preferred else None
-                if device is None and not preferred:
-                    device = next((d for d in candidates if hint and hint in d['name'].casefold()), None)
+                candidates, error = self.devices(path)
+                device = self._choose_device(candidates)
                 if device is None:
-                    self.error = '未发现匹配的手柄；选择 event 设备后重试'
-                    time.sleep(.25)
+                    self.error = error
+                    self._stop_event.wait(.25)
                     continue
                 fd = os.open(device['path'], os.O_RDONLY | os.O_NONBLOCK)
                 device = dict(device)
@@ -194,6 +250,7 @@ class EvdevInput:
                     snapshot = {'guid': device['guid'], 'generation': self.generation,
                                 'sequence': self.sequence, 'axes': axes, 'dpad': dpad,
                                 'lb': keys[self.key_codes['lb']], 'b': keys[self.key_codes['b']],
+                                'home': keys[self.key_codes['home']],
                                 'connected': True, 'link_verified': self.link_verified,
                                 'mapping_verified': self.mapping_verified,
                                 'source': 'evdev', 'received_at': time.monotonic(), 'device': device}
@@ -203,19 +260,15 @@ class EvdevInput:
                     if readable:
                         try: os.read(fd, 24*256)
                         except BlockingIOError: pass
-                os.close(fd)
-                self._fd = None
             except (OSError, ValueError) as exc:
-                fd, self._fd = self._fd, None
-                if fd is not None:
-                    try: os.close(fd)
-                    except OSError: pass
                 self.generation += 1
                 with self.lock: self.frame = None
                 self.error = f'手柄断开或输入读取失败：{exc}'
-                if preferred:
-                    preferred = None
-                time.sleep(.1)
+                self._stop_event.wait(.1)
+            finally:
+                if fd is not None:
+                    os.close(fd)
+                self._fd = None
         with self.lock: self.frame = None
 
     def latest(self):

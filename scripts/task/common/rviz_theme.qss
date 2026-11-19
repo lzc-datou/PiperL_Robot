@@ -1,0 +1,17 @@
+/* Local logical-pixel scale. Borders, backgrounds and arrows use host QStyle. */
+QWidget { font-size: @body@px; font-weight: 400; }
+QLabel#title, QLabel[role="title"] { font-size: @title@px; font-weight: 600; }
+QGroupBox { font-size: @button@px; font-weight: 600; }
+QLabel#sectionTitle, QLabel[role="sectionTitle"] { font-size: @button@px; font-weight: 600; }
+QLabel#status, QLabel[role="status"] { font-size: @button@px; font-weight: 600; }
+QLabel#metric, QLabel#joint_value { font-size: @title@px; font-weight: 600; }
+QLabel#muted, QLabel#subtitle, QLabel#hint, QLabel#caption, QLabel[role="muted"],
+QPlainTextEdit, QTextEdit { font-size: @hint@px; }
+QPushButton, QToolButton { font-size: @button@px; min-height: @control@px; }
+QPushButton[role="danger"], QPushButton[persistent="true"] { min-height: @stop@px; }
+QLineEdit, QComboBox, QAbstractSpinBox { min-height: @field@px; }
+QPushButton[role="primary"] { font-weight: 600; }
+QPushButton[role="danger"] { color: #a12f2f; font-weight: 600; }
+QPushButton[role="danger"]:disabled { color: palette(mid); }
+QLabel#status[tone="danger"], QLabel[role="status"][tone="danger"] { color: #a12f2f; }
+QLabel#status[tone="warning"], QLabel[role="status"][tone="warning"] { color: #80530a; }

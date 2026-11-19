@@ -13,12 +13,12 @@ def frame(seq=1, gen=1, axes=(0,0,0,0), dpad=(0,0,0,0), lb=False, b=False, t=10.
 
 class GamepadCoreTests(unittest.TestCase):
     def test_fixed_mapping_and_vector_caps(self):
-        self.assertAlmostEqual(map_velocity(frame(axes=(0,-1,0,0)), 1)[0], .05)
-        self.assertAlmostEqual(map_velocity(frame(axes=(1,0,0,0)), 1)[1], -.05)
-        self.assertAlmostEqual(map_velocity(frame(axes=(0,0,0,-1)), 1)[2], .05)
+        self.assertAlmostEqual(map_velocity(frame(axes=(0,-1,0,0)), 1)[0], .30)
+        self.assertAlmostEqual(map_velocity(frame(axes=(1,0,0,0)), 1)[1], -.30)
+        self.assertAlmostEqual(map_velocity(frame(axes=(0,0,0,-1)), 1)[2], .30)
         v = map_velocity(frame(axes=(1,-1,1,-1), dpad=(1,0,1,0)), 1)
-        self.assertLessEqual(sum(x*x for x in v[:3])**.5, .0500001)
-        self.assertLessEqual(sum(x*x for x in v[3:])**.5, .2500001)
+        self.assertLessEqual(sum(x*x for x in v[:3])**.5, .3000001)
+        self.assertLessEqual(sum(x*x for x in v[3:])**.5, 1.5000001)
 
     def test_deadzone_continuous_monotonic_and_dpad_conflict(self):
         self.assertEqual(shape_axis(.08), 0.)
@@ -41,12 +41,12 @@ class GamepadCoreTests(unittest.TestCase):
 
     def test_lb_requires_neutral_and_b_latches(self):
         state=ControlState(); state.start()
-        self.assertEqual(state.update(frame(axes=(0.5,0,0,0),lb=True)),(0.,)*6)
+        self.assertFalse(state.update(frame(axes=(0.5,0,0,0),lb=True)))
         state.update(frame(2,t=10.00))
         state.update(frame(3,t=10.16))
         output=state.update(frame(4,axes=(0.7,0,0,0),lb=True,t=10.18))
         self.assertEqual(state.state,'ACTIVE')
-        self.assertLess(output[1],0.)
+        self.assertTrue(output)
         state.update(frame(5,lb=False,t=10.20))
         self.assertEqual(state.state,'ARMED')
         state.update(frame(6,b=True,t=10.22))
@@ -76,7 +76,10 @@ class GamepadCoreTests(unittest.TestCase):
         path=Path(__file__).parents[1]/'scripts/tools/gamepad_control/config/config.yaml'
         config=validate_tool_config(yaml.safe_load(path.read_text()))
         self.assertEqual(config['default_speed_scale'],.2)
-        config['linear_speed_max']=.2
+        self.assertEqual(config['linear_speed_max'], .30)
+        self.assertEqual(config['angular_speed_max'], 1.50)
+        self.assertEqual(config['joint_speed'], 1.50)
+        config['linear_speed_max']=.300001
         with self.assertRaisesRegex(ValueError,'linear_speed_max'):
             validate_tool_config(config)
 
@@ -90,7 +93,7 @@ class GamepadCoreTests(unittest.TestCase):
         axes,inversions,buttons,dpad=_profile_mapping(profile)
         self.assertEqual(axes,(2,1,3,4))
         self.assertEqual(inversions,(True,False,False,False))
-        self.assertEqual(buttons,{'lb':0x136,'b':0x131})
+        self.assertEqual(buttons,{'lb':0x136,'b':0x131,'home':0x134})
         self.assertEqual(dpad,((17,-1),(17,1),(16,-1),(16,1)))
         profile['evdev']['axes']['left_x']={'code':'ABS_HAT0X'}
         with self.assertRaisesRegex(ValueError,'轴 left_x'):

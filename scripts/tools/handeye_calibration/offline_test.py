@@ -11,6 +11,51 @@ from handeye_calibration_ros.agx_arm_calibration import AgxArmCalibrationNode, P
 
 from board import generate
 from collector import CheckedCalibration, matrix, valid_pair
+from chessboard import board_settings, object_grid, ordered_corners, solve_pose
+
+
+def check_chessboard():
+    k = np.array([[620., 0, 320], [0, 620., 240], [0, 0, 1]])
+    d = np.zeros(5)
+    for columns, rows in ((8, 11), (9, 12)):
+        pattern, size = board_settings({'columns': columns, 'rows': rows, 'square_size_mm': 15})
+        points = object_grid(pattern, size)
+        assert points.shape == (columns * rows, 3)
+        np.testing.assert_allclose(points[-1], [(columns - 1) * 0.015, (rows - 1) * 0.015, 0])
+        center = np.array([(columns - 1) / 2, (rows - 1) / 2, 0]) * size
+        assert ordered_corners(np.full((480, 640), 255, np.uint8), pattern) is None
+        for pitch in (0, 30, 50):
+            for roll in (0, 75, 150):
+                expected = Rotation.from_euler('xyz', [pitch, 10, roll], degrees=True)
+                rvec = expected.as_rotvec()
+                tvec = np.array([0., 0., 0.43]) - expected.as_matrix() @ center
+                image = np.full((480, 640), 255, np.uint8)
+                for y in range(-1, rows):
+                    for x in range(-1, columns):
+                        if (x + y) % 2:
+                            continue
+                        cell = np.array([[x, y, 0], [x + 1, y, 0],
+                                         [x + 1, y + 1, 0], [x, y + 1, 0]], float) * size
+                        pixels, _ = cv2.projectPoints(cell, rvec, tvec, k, d)
+                        cv2.fillConvexPoly(image, np.rint(pixels.reshape(4, 2)).astype(np.int32), 0)
+                corners = ordered_corners(image, pattern)
+                assert corners is not None and len(corners) == columns * rows, (pattern, pitch, roll)
+                result = solve_pose(points, corners, k, d)
+                assert result is not None, (pattern, pitch, roll)
+                rotation, translation, rms = result
+                # Integer-pixel rendering introduces quantization; test the physical
+                # scale and frame direction without claiming submillimeter accuracy.
+                assert np.linalg.norm(translation - tvec) < 0.002, (pattern, pitch, roll)
+                assert (Rotation.from_matrix(rotation).inv() * expected).magnitude() < np.deg2rad(1.0)
+                assert rms < 1.0
+                turned = ordered_corners(cv2.rotate(image, cv2.ROTATE_180), pattern)
+                assert turned is not None
+                np.testing.assert_allclose(
+                    turned + corners, np.broadcast_to([639., 479.], corners.shape), atol=0.8)
+                corrupted = corners.copy()
+                corrupted[20, 0] += 40
+                assert solve_pose(points, corrupted, k, d) is None
+    print('PASS: 8×11/9×12 棋盘格、多轴姿态、毫米尺度、位姿方向、180° 原点、空白图与异常重投影拒绝。')
 
 
 def make_pose(transform):
@@ -22,6 +67,15 @@ def make_pose(transform):
 
 
 def run():
+    from tests_quality import run as check_quality
+    from tests_sampling import run as check_sampling
+    from tests_feedback import run as check_feedback
+    from tests_combined import run as check_combined
+    check_feedback()
+    check_quality()
+    check_sampling()
+    check_combined()
+    check_chessboard()
     rng = np.random.default_rng(43)
     expected = np.eye(4)
     expected[:3, :3] = Rotation.from_euler('xyz', [0.2, -0.3, 0.4]).as_matrix()

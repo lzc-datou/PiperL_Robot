@@ -14,12 +14,15 @@
 #include <QStackedWidget>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QPlainTextEdit>
 
 namespace piper_servo_tracking {
 class Panel : public rviz_common::Panel {
   Q_OBJECT
 public:
   explicit Panel(QWidget *parent=nullptr);
+  QSize sizeHint() const override { return QSize(440,640); }
+  QSize minimumSizeHint() const override { return QSize(320,360); }
   void onInitialize() override;
   ~Panel() override;
 private:
@@ -37,6 +40,8 @@ private:
   std::map<std::string,rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr> clients_;
   rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr mode_client_;
   QLabel *mode_, *state_, *position_error_, *orientation_error_, *reach_, *posture_, *speed_label_, *speed_limits_;
+  QLabel *flow_hint_;
+  QPlainTextEdit *state_detail_;
   QPushButton *start_, *stop_, *reset_, *home_, *plan_, *execute_;
   QComboBox *control_;
   QStackedWidget *actions_;

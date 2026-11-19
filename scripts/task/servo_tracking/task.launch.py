@@ -15,7 +15,7 @@ from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 from moveit_configs_utils import MoveItConfigsBuilder
 from servo_tracking.core import JOINTS, load_config, joint_speed_limits
-from scripts.tools.gamepad_control.core import validate_tool_config
+from scripts.tools.gamepad_control.settings import load_tool_config
 
 
 def build(context):
@@ -34,8 +34,7 @@ def build(context):
     if gamepad_mode:
         if not gamepad_config:
             gamepad_config = str(Path(os.environ.get('PIPERL_ROOT',''))/'scripts/tools/gamepad_control/config/config.yaml')
-        with open(gamepad_config, encoding='utf-8') as stream:
-            gp = validate_tool_config(yaml.safe_load(stream))
+        gp = load_tool_config(gamepad_config)
         if mode == 'real' and (input_source != 'evdev' or not gamepad_link_verified or not gamepad_mapping_verified):
             raise ValueError('实机模式只接受已分别验证失联行为与轴映射的 evdev 输入')
         if mode == 'real' and input_source == 'fixture':
@@ -115,6 +114,10 @@ def build(context):
         'is_primary_planning_scene_monitor': False, 'check_collisions': True, 'collision_check_rate': 30.,
         'self_collision_proximity_threshold': .01, 'scene_collision_proximity_threshold': .025,
         'joint_limit_margins': [config['joint_margin']], 'incoming_command_timeout': config['command_timeout'],
+        # Keep the solved TCP direction through the last bound check. The
+        # gamepad guard keeps the session open on JOINT_BOUND, so a fresh
+        # inward request can retreat without unlocking or restarting.
+        'halt_all_joints_in_joint_mode': True,
         # Native JOINT_JOG skips Cartesian condition-number scaling while the
         # shared official output path retains collisions and joint constraints.
         'publish_joint_positions': True, 'publish_joint_velocities': True,
@@ -127,6 +130,7 @@ def build(context):
         guard_params = {'config_file': config_file, 'control_config_file': control_file, 'mode': mode,
                         'gamepad_mode': True, 'gamepad_input_timeout_s': gp['input_timeout_s'],
                         'gamepad_gui_timeout_s': gp['gui_timeout_s'],
+                        'gamepad_deadzone': gp['deadzone'],
                         'gamepad_stop_settle_window_s': gp['stop_settle_window_s'],
                         'gamepad_stop_joint_span_rad': gp['stop_joint_span_rad'],
                         'require_verified_gamepad_link': True,
@@ -150,8 +154,9 @@ def build(context):
             'pub_rate': 200, 'tcp_offset': list(map(float, tcp)), 'speed_percent': 0,
         }])
     if LaunchConfiguration('rviz').perform(context) == 'true':
+        rviz_config = 'gamepad.rviz' if gamepad_mode else 'servo.rviz'
         node('rviz2', 'rviz2', 'servo_rviz', model_parameters,
-             arguments=['-d', str(Path(get_package_share_directory('piper_servo_tracking'))/'config/servo.rviz')])
+             arguments=['-d', str(Path(get_package_share_directory('piper_servo_tracking'))/'config'/rviz_config)])
     # A dead critical node/closed RViz ends the owned stack. run.py requests a stop before teardown.
     # Keep watchdog/driver alive for failure detection and hold before launch tears down peers.
     handlers = [RegisterEventHandler(OnProcessExit(target_action=n, on_exit=[TimerAction(

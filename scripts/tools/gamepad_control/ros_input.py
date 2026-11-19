@@ -2,7 +2,6 @@
 import os
 import sys
 import time
-from pathlib import Path
 ROOT = os.environ.get('PIPERL_ROOT')
 if ROOT and ROOT not in sys.path: sys.path.insert(0, ROOT)
 import rclpy
@@ -10,7 +9,7 @@ from rclpy.node import Node
 from rclpy.signals import SignalHandlerOptions
 from piper_servo_tracking.msg import GamepadInput
 from .input_adapter import EvdevInput
-import yaml
+from .settings import load_input_profile
 
 
 class InputNode(Node):
@@ -36,10 +35,7 @@ class InputNode(Node):
             self.create_subscription(GamepadInput, '/piper_servo/gamepad/fixture', self.on_fixture, 10)
         self.adapter = None
         if self.source == 'evdev':
-            profile_path = Path(__file__).parent/'config/flydigi_direwolf2.yaml'
-            with profile_path.open(encoding='utf-8') as stream:
-                profile = yaml.safe_load(stream)
-            self.adapter = EvdevInput(profile, self.link_verified, self.mapping_verified)
+            self.adapter = EvdevInput(load_input_profile(), self.link_verified, self.mapping_verified)
             self.adapter.start(self.device)
         self.create_timer(.02, self.tick)
 
@@ -58,6 +54,7 @@ class InputNode(Node):
         msg.axes = list(snapshot['axes'])
         msg.dpad = list(snapshot['dpad'])
         msg.lb, msg.b = bool(snapshot['lb']), bool(snapshot['b'])
+        msg.home = bool(snapshot.get('home', False))
         self.pub.publish(msg)
 
     def on_fixture(self,msg):
@@ -65,7 +62,8 @@ class InputNode(Node):
         if (len(msg.axes)!=4 or len(msg.dpad)!=4 or any(v not in (0,1) for v in msg.dpad)):
             return
         self.fixture_override={'axes':tuple(msg.axes),'dpad':tuple(msg.dpad),
-            'lb':bool(msg.lb),'b':bool(msg.b),'name':msg.device_name or '测试输入 fixture'}
+            'lb':bool(msg.lb),'b':bool(msg.b),'home':bool(msg.home),
+            'name':msg.device_name or '测试输入 fixture'}
         self.fixture_received=time.monotonic()
 
     def tick(self):
@@ -73,13 +71,14 @@ class InputNode(Node):
             if self.fixture_override and time.monotonic()-self.fixture_received>.12:
                 return
             self.sequence += 1
-            override=self.fixture_override or {'axes':(0.,)*4,'dpad':(0,)*4,'lb':False,'b':False,'name':'模拟中立 fixture'}
+            override=self.fixture_override or {'axes':(0.,)*4,'dpad':(0,)*4,
+                'lb':False,'b':False,'home':False,'name':'模拟中立 fixture'}
             self.publish({'guid':'sim-fixture', 'source':'fixture', 'generation':self.generation,
                           'sequence':self.sequence, 'connected':True, 'link_verified':False,
                           'mapping_verified':False,
                           'device':{'name':override['name'],'connection':'fixture'},
                           'axes':override['axes'],'dpad':override['dpad'],
-                          'lb':override['lb'],'b':override['b']})
+                          'lb':override['lb'],'b':override['b'],'home':override['home']})
             return
         if self.source == 'external':
             return

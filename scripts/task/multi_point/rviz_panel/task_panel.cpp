@@ -1,6 +1,7 @@
 #include "task_panel.hpp"
 #include "default_layout.hpp"
 #include "scene_marker_display.hpp"
+#include "../../common/ui_theme.hpp"
 #include <pluginlib/class_list_macros.hpp>
 #include <rviz_common/display_context.hpp>
 #include <rviz_common/display_group.hpp>
@@ -12,6 +13,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTabWidget>
+#include <QScrollArea>
+#include <QFrame>
+#include <QStyle>
 #include <atomic>
 #include <unistd.h>
 
@@ -22,21 +26,27 @@ void textIfChanged(QLabel *label,const QString &text) {
 }
 }
 TaskPanel::TaskPanel(QWidget *parent) : rviz_common::Panel(parent) {
-  auto *rootLayout=new QVBoxLayout(this);rootLayout->setContentsMargins(0,0,0,0);
-  auto *tabs=new QTabWidget(this);rootLayout->addWidget(tabs);
-  auto *taskPage=new QWidget;tabs->addTab(taskPage,"运动");
+  setMinimumWidth(360);
+  auto *rootLayout=new QVBoxLayout(this);rootLayout->setContentsMargins(10,10,10,10);rootLayout->setSpacing(8);
+  auto *title=new QLabel("多点任务",this);title->setProperty("role","title");rootLayout->addWidget(title);
+  state_=new piper_ui::StatusLabel("未连接",this);state_->setObjectName("taskState");state_->setProperty("role","status");
+  rootLayout->addWidget(state_);
+  motion_=new MotionControls(this);rootLayout->addWidget(motion_->persistentActions());
+  connect(motion_,&MotionControls::command,this,[this](const QString &name){send(name.toStdString());});
+  auto *tabs=new QTabWidget(this);rootLayout->addWidget(tabs,1);
+  auto *taskScroll=new QScrollArea;taskScroll->setWidgetResizable(true);taskScroll->setFrameShape(QFrame::NoFrame);
+  taskScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  auto *taskPage=new QWidget;taskScroll->setWidget(taskPage);tabs->addTab(taskScroll,"运动");
   scene_editor_=new SceneEditor;tabs->addTab(scene_editor_,"场景");
   connect(scene_editor_,&SceneEditor::command,this,[this](const QString &name,const QString &payload){send(name.toStdString(),payload.toStdString());});
-  auto *layout=new QVBoxLayout(taskPage);layout->setContentsMargins(8,8,8,8);layout->setSpacing(8);
-  auto *files=new QHBoxLayout();
-  path_=new QLineEdit(this);path_->setPlaceholderText("任务 YAML 文件");path_->setMinimumWidth(100);
-  browse_=new QPushButton("选择…",this);load_=new QPushButton("加载",this);
-  files->addWidget(path_,1);files->addWidget(browse_);files->addWidget(load_);layout->addLayout(files);
-  motion_=new MotionControls(this);layout->addWidget(motion_);
-  connect(motion_,&MotionControls::command,this,[this](const QString &name){send(name.toStdString());});
-  state_=new QLabel("未连接",this);state_->setObjectName("taskState");
-  state_->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);
-  layout->addWidget(state_);layout->addStretch();
+  auto *layout=new QVBoxLayout(taskPage);layout->setContentsMargins(8,10,8,10);layout->setSpacing(12);layout->setAlignment(Qt::AlignTop);
+  auto *fileTitle=new QLabel("任务配置",taskPage);fileTitle->setProperty("role","sectionTitle");layout->addWidget(fileTitle);
+  path_=new QLineEdit(this);path_->setPlaceholderText("选择任务 YAML 文件");path_->setMinimumWidth(0);path_->setMinimumHeight(40);path_->setAccessibleName("任务配置文件路径");layout->addWidget(path_);
+  auto *files=new QHBoxLayout;files->setSpacing(8);
+  browse_=new QPushButton("选择文件…",this);load_=new QPushButton("加载任务",this);
+  browse_->setMinimumHeight(48);load_->setMinimumHeight(48);
+  load_->setProperty("role","primary");files->addWidget(browse_,1);files->addWidget(load_,1);layout->addLayout(files);
+  layout->addWidget(motion_);layout->addStretch();
   connect(browse_,&QPushButton::clicked,this,[this]{
     auto file=QFileDialog::getOpenFileName(this,"选择任务配置",path_->text(),"YAML (*.yaml *.yml)");
     if(!file.isEmpty()) path_->setText(file);
@@ -44,6 +54,7 @@ TaskPanel::TaskPanel(QWidget *parent) : rviz_common::Panel(parent) {
   connect(load_,&QPushButton::clicked,this,[this]{send("load",path_->text().toStdString());});
   connect(path_,&QLineEdit::textChanged,this,[this]{refresh();});
   connect(&timer_,&QTimer::timeout,this,[this]{if(node_) executor_.spin_some(std::chrono::milliseconds(5)); refresh();});
+  piper_ui::apply(this);
   clock_.start();refresh();
 }
 TaskPanel::~TaskPanel() {
@@ -214,6 +225,10 @@ void TaskPanel::refresh() {
   const bool idle=online && !busy_ && !waiting_;
   scene_editor_->updateState(scene_status_,idle);
   browse_->setEnabled(!busy_);path_->setEnabled(!busy_);load_->setEnabled(idle && !path_->text().isEmpty());
+  const QString loadRole=has_config_ && path_->text()==loaded_path_?"secondary":"primary";
+  if(load_->property("role").toString()!=loadRole) {
+    load_->setProperty("role",loadRole);load_->style()->unpolish(load_);load_->style()->polish(load_);
+  }
   motion_->updateState(scene_status_,online,idle,path_->text()==loaded_path_,preview_visible_);
   const QMap<QString,QString> labels={{"ERROR","任务失败 · 查看终端"},{"RECOVERING","恢复控制中…"},{"IDLE","就绪"},{"MANUAL","单点操作"},{"LOADED","已加载"},{"PLANNING","规划中…"},{"PLANNED","规划完成 · 请选择预览"},{"READY","待确认执行"},{"EXECUTING","执行中…"}};
   QString status=online ? labels.value(backend_state_,"就绪") : "未连接";
@@ -221,6 +236,11 @@ void TaskPanel::refresh() {
   if(online && !notice_.isEmpty()) status=notice_;
   if(online && recovery_required_ && !busy_) status="已停止 · 请恢复控制";
   textIfChanged(state_,status);
+  const QString tone=!online || recovery_required_ ? "warning" :
+    backend_state_=="ERROR" || backend_state_=="START_INVALID" || backend_state_=="FEEDBACK_UNAVAILABLE" ? "danger" : "active";
+  if(state_->property("tone").toString()!=tone) {
+    state_->setProperty("tone",tone);state_->style()->unpolish(state_);state_->style()->polish(state_);
+  }
 }
 void TaskPanel::save(rviz_common::Config config) const {
   rviz_common::Panel::save(config);config.mapSetValue("TaskConfig",path_->text());

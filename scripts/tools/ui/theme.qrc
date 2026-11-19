@@ -1,0 +1,7 @@
+<RCC>
+  <qresource prefix="/piper/ui">
+    <file alias="theme.qss">theme.qss</file>
+    <file alias="chevron-down.svg">chevron-down.svg</file>
+    <file alias="chevron-up.svg">chevron-up.svg</file>
+  </qresource>
+</RCC>

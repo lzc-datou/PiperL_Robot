@@ -4,11 +4,14 @@ ui_refresh_hz: 20.0
 deadzone: 0.08
 neutral_dwell_s: 0.15
 response_exponent: 1.5
-linear_speed_max: 0.05
-angular_speed_max: 0.25
-joint_speed: 0.30
-joint_acceleration: 0.50
+# TCP ceilings match the current Servo task. Joint ceilings match the supplied
+# multi-point profile: model 5 * scaling .30, not a measured hardware rating.
+linear_speed_max: 0.30
+angular_speed_max: 1.50
+joint_speed: 1.50
+joint_acceleration: 1.50
 default_speed_scale: 0.20
+input_filter_time_constant_s: 0.04
 dpad_scale: 0.35
 input_timeout_s: 0.20
 gui_timeout_s: 0.30

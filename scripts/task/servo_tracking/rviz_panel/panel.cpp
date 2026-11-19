@@ -1,4 +1,6 @@
 #include "panel.hpp"
+#include "../../common/ui_theme.hpp"
+#include "../../common/rviz_window.hpp"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QJsonDocument>
@@ -8,8 +10,16 @@
 #include <QSignalBlocker>
 #include <QPainter>
 #include <QEvent>
+#include <QGroupBox>
+#include <QGridLayout>
+#include <QPlainTextEdit>
+#include <QScrollArea>
+#include <QToolButton>
+#include <QStyle>
 #include <pluginlib/class_list_macros.hpp>
 #include <rviz_common/display_group.hpp>
+#include <rviz_common/display_context.hpp>
+#include <rviz_common/window_manager_interface.hpp>
 #include <cmath>
 #include <unistd.h>
 
@@ -49,66 +59,110 @@ QString compactState(const QString &text){
 }
 }
 Panel::Panel(QWidget *parent):rviz_common::Panel(parent) {
+  piper_ui::apply(this);
+  setMinimumWidth(320);
   auto *layout=new QVBoxLayout(this);
-  layout->setContentsMargins(10,10,10,10);layout->setSpacing(8);
-  mode_=new StableLabel("六轴伺服");mode_->setStyleSheet("font-size:18px; font-weight:600");
-  state_=new StableLabel("连接中…");
-  layout->addWidget(mode_);layout->addWidget(state_);
-  auto *legend=new QHBoxLayout;
-  auto *target_legend=new QLabel("黄色：目标");
-  target_legend->setStyleSheet("color:#a37b00");
-  legend->addWidget(target_legend);legend->addWidget(new QLabel("原色：实际"));
-  legend->addStretch();layout->addLayout(legend);
-  auto *control_row=new QHBoxLayout;
-  control_row->addWidget(new QLabel("控制"));
+  layout->setContentsMargins(8,8,8,8);layout->setSpacing(8);
+  auto *command_area=new QWidget;
+  command_area->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);
+  auto *command_layout=new QVBoxLayout(command_area);
+  command_layout->setContentsMargins(0,0,0,0);command_layout->setSpacing(4);
+  auto *header=new QHBoxLayout;header->setSpacing(12);
+  auto *title=new QLabel("末端目标");title->setObjectName("title");
+  mode_=new StableLabel("六轴伺服");mode_->setObjectName("muted");
+  mode_->setAlignment(Qt::AlignRight|Qt::AlignVCenter);
+  header->addWidget(title);header->addWidget(mode_,1);command_layout->addLayout(header);
+  state_=new piper_ui::StatusLabel("连接中…");state_->setObjectName("status");
+  command_layout->addWidget(state_);
+  stop_=new QPushButton("停止");stop_->setProperty("role","danger");
+  stop_->setToolTip("软件停止；不代替物理急停");command_layout->addWidget(stop_);
+  layout->addWidget(command_area);
+  auto *divider=new QFrame;divider->setFrameShape(QFrame::HLine);layout->addWidget(divider);
+
+  // The command area stays together; only the continuous work area scrolls.
+  auto *scroll=new QScrollArea;scroll->setWidgetResizable(true);
+  scroll->setFrameShape(QFrame::NoFrame);
+  scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  scroll->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Expanding);
+  auto *content=new QWidget;auto *body=new QVBoxLayout(content);
+  body->setContentsMargins(0,0,2,0);body->setSpacing(8);scroll->setWidget(content);
+  layout->addWidget(scroll,1);
+  auto *control_row=new QHBoxLayout;control_row->setSpacing(12);
+  auto *control_title=new QLabel("控制方式");control_title->setObjectName("sectionTitle");
+  control_row->addWidget(control_title);
   control_=new QComboBox;control_->addItems({"伺服","单点"});
-  control_->setToolTip("切换模式会先停止当前动作。伺服：连续跟踪黄色目标，奇异起点会自动经 MoveIt 规划到配置的准备姿态。单点：从实测关节规划到黄色目标，点击执行");
-  control_row->addWidget(control_,1);layout->addLayout(control_row);
-  auto *row=new QHBoxLayout;
-  start_=new QPushButton("开启跟踪");stop_=new QPushButton("停止");
+  control_->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);
+  control_->setToolTip("伺服：连续跟踪黄色目标。单点：先规划、后执行。切换模式会先停止当前动作并取消旧计划。");
+  control_row->addWidget(control_,1);body->addLayout(control_row);
+  flow_hint_=new QLabel("拖动三维目标，验证后点击开启跟踪。",content);
+  flow_hint_->setObjectName("hint");flow_hint_->hide();
+  start_=new QPushButton("开启跟踪");
   plan_=new QPushButton("规划");execute_=new QPushButton("执行");
+  start_->setProperty("role","primary");execute_->setProperty("role","primary");
   plan_->setToolTip("从当前实测关节规划到黄色目标；只规划，不移动机械臂");
   execute_->setToolTip("执行已检查的单点计划；修改目标后需要重新规划");
   start_->setToolTip("保留已设置的目标，检查可达后开始连续跟踪；只有“重置目标”会对齐实际末端");
   for(auto *button:{start_,plan_,execute_,stop_}){
-    button->setFixedHeight(36);button->setMinimumWidth(52);
+    button->setMinimumWidth(52);
     button->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);
   }
-  stop_->setStyleSheet("QPushButton {background:#b73b3b; color:white; font-weight:600;}");
-  // The stack reserves the same geometry for both modes, including hidden
-  // buttons. Switching modes cannot change the dock's minimum width/height.
+  // Both modes use the natural button row height at the active font scale.
   actions_=new QStackedWidget;
+  actions_->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);
   auto *servo_actions=new QWidget;auto *servo_layout=new QHBoxLayout(servo_actions);
   servo_layout->setContentsMargins(0,0,0,0);servo_layout->setSpacing(0);servo_layout->addWidget(start_);
   auto *point_actions=new QWidget;auto *point_layout=new QHBoxLayout(point_actions);
   point_layout->setContentsMargins(0,0,0,0);point_layout->setSpacing(8);
   point_layout->addWidget(plan_,1);point_layout->addWidget(execute_,1);
-  actions_->addWidget(servo_actions);actions_->addWidget(point_actions);actions_->setFixedHeight(36);
-  row->addWidget(actions_,2);row->addWidget(stop_,1);layout->addLayout(row);
-  auto *reset_row=new QHBoxLayout;
-  reset_=new QPushButton("重置目标");home_=new QPushButton("回零");
+  actions_->addWidget(servo_actions);actions_->addWidget(point_actions);
+  body->addWidget(actions_);
+  auto *reset_row=new QHBoxLayout;reset_row->setSpacing(8);
+  reset_=new QPushButton("重置目标");home_=new QPushButton("机械臂回零");
   for(auto *button:{reset_,home_}){
-    button->setMinimumHeight(32);button->setMinimumWidth(52);
-    button->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);
-    reset_row->addWidget(button,1);
+    button->setMinimumWidth(52);
+    button->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);reset_row->addWidget(button,1);
   }
-  layout->addLayout(reset_row);
+  body->addLayout(reset_row);
   reset_->setToolTip("停止跟踪，将目标对齐实际末端；不驱动机械臂");
   home_->setToolTip("停止跟踪，经关节规划回到六轴 0°；不重新标零、不自动使能");
-  stop_->setToolTip("软件停止；不代替物理急停");
-  speed_label_=new StableLabel("速度 50%");layout->addWidget(speed_label_);
+
+  body->addSpacing(8);
+  speed_label_=new StableLabel("速度 50%");speed_label_->setObjectName("sectionTitle");
+  speed_limits_=new StableLabel("上限 — mm/s · — °/s");speed_limits_->setObjectName("muted");
+  speed_limits_->setAlignment(Qt::AlignLeft|Qt::AlignVCenter);
+  body->addWidget(speed_label_);body->addWidget(speed_limits_);
   slider_=new QSlider(Qt::Horizontal);slider_->setRange(10,100);slider_->setValue(50);
-  layout->addWidget(slider_);
-  speed_limits_=new StableLabel("上限 — mm/s · — °/s");layout->addWidget(speed_limits_);
+  body->addWidget(slider_);
   speed_limits_->setToolTip("TCP 线速度与角速度上限，非实时速度；还受关节软件上限限制");
-  position_error_=new StableLabel("位置误差 — mm");layout->addWidget(position_error_);
+  body->addSpacing(8);
+  position_error_=new StableLabel("位置误差 — mm");position_error_->setObjectName("sectionTitle");
+  orientation_error_=new StableLabel("姿态误差 — °");orientation_error_->setObjectName("sectionTitle");
+  body->addWidget(position_error_);body->addWidget(orientation_error_);
   position_error_->setToolTip("目标虚影 TCP 与实际 TCP 的直线距离；远目标按限速逐步跟踪");
-  orientation_error_=new StableLabel("姿态误差 — °");layout->addWidget(orientation_error_);
   orientation_error_->setToolTip("目标虚影 TCP 与实际 TCP 的三维最短旋转角，不是关节角；只平移目标时，姿态误差可为 0°");
-  reach_=new StableLabel("目标：未检查");layout->addWidget(reach_);
-  posture_=new StableLabel("姿态：等待反馈");layout->addWidget(posture_);
-  show_=new QCheckBox("显示可达范围（近似）");show_->setChecked(true);layout->addWidget(show_);
-  layout->addStretch();
+  reach_=new StableLabel("目标：未检查");reach_->setObjectName("muted");body->addWidget(reach_);
+
+  auto *details_button=new QToolButton;details_button->setText("显示与诊断");details_button->setCheckable(true);
+  details_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);details_button->setArrowType(Qt::RightArrow);
+  details_button->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Fixed);body->addWidget(details_button);
+  auto *details=new QWidget;auto *details_layout=new QVBoxLayout(details);
+  details->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);
+  details_layout->setContentsMargins(2,0,2,4);details_layout->setSpacing(8);
+  auto *legend=new QHBoxLayout;legend->setSpacing(12);
+  auto *target_legend=new QLabel("黄色：目标");target_legend->setObjectName("muted");
+  auto *actual_legend=new QLabel("原色：实际");actual_legend->setObjectName("muted");
+  legend->addWidget(target_legend);legend->addWidget(actual_legend);legend->addStretch();details_layout->addLayout(legend);
+  show_=new QCheckBox("显示可达范围（近似）");show_->setChecked(true);details_layout->addWidget(show_);
+  posture_=new StableLabel("姿态：等待反馈");details_layout->addWidget(posture_);
+  state_detail_=new QPlainTextEdit;state_detail_->setReadOnly(true);
+  state_detail_->setPlainText("等待任务连接；完整状态将在这里显示。");
+  state_detail_->setFixedHeight(160);state_detail_->setMinimumWidth(0);
+  state_detail_->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);details_layout->addWidget(state_detail_);
+  details->hide();body->addWidget(details);body->addStretch(1);
+  connect(details_button,&QToolButton::toggled,this,[details_button,details,scroll](bool expanded){
+    details->setVisible(expanded);details_button->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+    if(expanded)QTimer::singleShot(0,scroll,[scroll,details]{scroll->ensureWidgetVisible(details,0,8);});
+  });
   connect(start_,&QPushButton::clicked,this,[this]{send("start");});
   connect(plan_,&QPushButton::clicked,this,[this]{send("plan");});
   connect(execute_,&QPushButton::clicked,this,[this]{send("execute");});
@@ -179,6 +233,7 @@ void Panel::sendMode(bool point_mode){
 }
 void Panel::updateControls(bool fresh){
   actions_->setCurrentIndex(point_mode_ ? 1 : 0);
+  flow_hint_->setText(point_mode_ ? "设置三维目标，先规划，再执行。" : "拖动三维目标，验证后点击开启跟踪。");
   const bool available=fresh && !active_ && !busy_ && !switching_mode_;
   start_->setEnabled(available && !point_mode_);
   plan_->setEnabled(available && point_mode_);
@@ -190,7 +245,15 @@ void Panel::updateControls(bool fresh){
 void Panel::setState(const QString &summary,const QString &detail){
   const auto compact=compactState(summary);
   if(state_->text()!=compact)state_->setText(compact);
-  state_->setToolTip(detail.isEmpty() ? summary : detail);
+  const auto full=detail.isEmpty() ? summary : detail;
+  state_->setToolTip(full);
+  if(state_detail_->toPlainText()!=full)state_detail_->setPlainText(full);
+  const QString tone=(summary.contains("异常") || summary.contains("失败") || summary.contains("中断") || summary.contains("超限"))
+    ? "danger" : (summary.contains("暂停") || summary.contains("等待") || summary.contains("准备"))
+    ? "warning" : (summary.contains("跟踪中") || summary.contains("已到位") || summary.contains("已开启")) ? "active" : "normal";
+  if(state_->property("tone").toString()!=tone){
+    state_->setProperty("tone",tone);state_->style()->unpolish(state_);state_->style()->polish(state_);
+  }
 }
 void Panel::updateSpeedLimits(double scale){
   const bool fresh=received_.isValid() && received_.elapsed()<800;
@@ -268,6 +331,16 @@ void Panel::receive(const std::string &json){
 // Same compatibility fix as the project's multi-point display, without depending on that task.
 class TimeCompatibleGroup: public rviz_common::DisplayGroup {
 public:
+  void load(const rviz_common::Config &config)override{
+    rviz_common::DisplayGroup::load(config);
+    bool fit=false;config.mapGetBool("Fit Window On Startup",&fit);
+    if(auto *manager=context_->getWindowManager())
+      piper_ui::prepareRvizWindow(qobject_cast<QMainWindow *>(manager->getParentWindow()),fit);
+  }
+  void save(rviz_common::Config config)const override{
+    rviz_common::DisplayGroup::save(config);
+    config.mapSetValue("Fit Window On Startup",false);
+  }
   void update(float wall_dt,float ros_dt)override{
 #ifdef PIPER_RVIZ_NANOSECOND_DELTA
     wall_dt*=1e-9f;ros_dt*=1e-9f;

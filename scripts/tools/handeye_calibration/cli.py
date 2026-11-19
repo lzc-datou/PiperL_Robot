@@ -1,5 +1,6 @@
 """Launch official camera/detector/calibrator with project-specific parameters."""
 import argparse
+import hashlib
 import importlib
 import json
 import os
@@ -25,6 +26,23 @@ def marker_size(cfg):
     return float(size)
 
 
+def target_settings(cfg):
+    kind = cfg.get('target', 'aruco')
+    if kind == 'aruco':
+        return kind, cfg['marker_pose_topic'], '/aruco_single/result'
+    if kind == 'chessboard':
+        return kind, '/handeye/chessboard/pose', '/handeye/chessboard/result'
+    raise SystemExit('target 必须为 chessboard 或 aruco。')
+
+
+def validate_target(cfg, kind):
+    if kind == 'aruco':
+        marker_size(cfg)
+    else:
+        from chessboard import board_settings
+        return board_settings(cfg.get('chessboard'))
+
+
 def ros_exec(args):
     sys.stdout.flush()
     os.execv(sys.executable, [sys.executable, '/opt/ros/jazzy/bin/ros2', *args])
@@ -32,9 +50,11 @@ def ros_exec(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['check', 'camera', 'marker', 'view', 'calibrate', 'board', 'offline-test'])
+    parser.add_argument('command', choices=['check', 'camera', 'marker', 'view', 'calibrate', 'board',
+                                          'offline-test', 'integration-test'])
     args = parser.parse_args()
     cfg = config()
+    kind, pose_topic, preview_topic = target_settings(cfg)
     name = cfg['camera_name']
     camera_frame = f'{name}_color_optical_frame'
     topic = f"/{cfg['camera_namespace']}/{name}/color"
@@ -45,7 +65,13 @@ def main():
         for package in ('aruco_ros', 'realsense2_camera', 'realsense2_description', 'handeye_calibration_ros'):
             subprocess.run([sys.executable, '/opt/ros/jazzy/bin/ros2', 'pkg', 'prefix', package], check=True)
         print('依赖检查通过（未连接相机或 CAN，未检查实时数据）。')
-        print('实测标记边长:', cfg['marker_size_m'], 'm；null 时禁止启动检测和采样。')
+        if kind == 'chessboard':
+            pattern, size = validate_target(cfg, kind)
+            for module in ('cv_bridge', 'message_filters'):
+                importlib.import_module(module)
+            print(f'棋盘格：{pattern[0]} × {pattern[1]} 内角点，每格 {size * 1000:g} mm。')
+        else:
+            print('ArUco 实测边长:', cfg['marker_size_m'], 'm；null 时禁止启动检测和采样。')
     elif args.command == 'camera':
         command = ['launch', 'realsense2_camera', 'rs_launch.py',
                    f'camera_namespace:={cfg["camera_namespace"]}', f'camera_name:={name}',
@@ -58,6 +84,10 @@ def main():
             command.append(f'serial_no:=_{cfg["camera_serial"]}')
         ros_exec(command)
     elif args.command == 'marker':
+        if kind == 'chessboard':
+            from chessboard import run
+            pattern, size = validate_target(cfg, kind)
+            return run(topic, camera_frame, pose_topic, preview_topic, pattern, size)
         size = marker_size(cfg)
         ros_exec(['run', 'aruco_ros', 'single', '--ros-args', '-r', '__node:=aruco_single',
                   '-p', f'marker_id:={cfg["marker_id"]}', '-p', f'marker_size:={size}',
@@ -65,9 +95,10 @@ def main():
                   '-p', f'reference_frame:={camera_frame}', '-p', 'marker_frame:=handeye_marker',
                   '-r', f'/image:={topic}/image_raw', '-r', f'/camera_info:={topic}/camera_info'])
     elif args.command == 'view':
-        ros_exec(['run', 'rqt_image_view', 'rqt_image_view', '/aruco_single/result'])
+        ros_exec(['run', 'rqt_image_view', 'rqt_image_view', preview_topic])
     elif args.command == 'calibrate':
-        marker_size(cfg)
+        validate_target(cfg, kind)
+        cfg = {**cfg, 'target': kind, 'marker_pose_topic': pose_topic}
         if not sys.stdin.isatty():
             raise SystemExit('请在交互终端中运行采样。')
         output = ROOT / 'outputs/handeye' / datetime.now().strftime('%Y%m%d_%H%M%S_%f')
@@ -75,10 +106,15 @@ def main():
         metadata = {**cfg, 'mode': 'eye_in_hand', 'camera_frame': camera_frame,
                     'transform': f"{cfg['end_frame']}_T_{camera_frame}",
                     'convention': 'p_end = R_end_camera @ p_camera + t_end_camera; meters; quaternion xyzw',
+                    'capture_schema_version': 2,
+                    'ros_domain_id': os.environ.get('ROS_DOMAIN_ID'),
+                    'tool_sources_sha256': {file: hashlib.sha256((TOOL / file).read_bytes()).hexdigest()
+                                           for file in ('cli.py', 'collector.py', 'chessboard.py', 'quality.py', 'feedback.py',
+                                                        'config/config.yaml')},
                     'dependencies': json.loads((TOOL / 'config/dependencies.json').read_text())}
         (output / 'session.json').write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + '\n')
         print('结果目录:', output, flush=True)
-        # Reuse the upstream solver and interactive sampling; add read-only input checks and sample export.
+        # Reuse the upstream solver; the project sampler persists inputs and checks stillness/source time.
         from collector import run
         run(cfg, output, camera_frame)
     elif args.command == 'board':
@@ -86,6 +122,9 @@ def main():
         generate(TOOL / 'assets', cfg['marker_id'])
     elif args.command == 'offline-test':
         from offline_test import run
+        run()
+    elif args.command == 'integration-test':
+        from integration_test import run
         run()
 
 

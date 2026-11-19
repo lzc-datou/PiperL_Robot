@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100">
+  <title>Original ArUco ID 582 — 100 mm board, 70 mm marker</title>
+  <rect width="100" height="100" fill="#ffffff"/>
+  <rect x="15" y="15" width="10" height="10" fill="#000000"/>
+  <rect x="25" y="15" width="10" height="10" fill="#000000"/>
+  <rect x="35" y="15" width="10" height="10" fill="#000000"/>
+  <rect x="45" y="15" width="10" height="10" fill="#000000"/>
+  <rect x="55" y="15" width="10" height="10" fill="#000000"/>
+  <rect x="65" y="15" width="10" height="10" fill="#000000"/>
+  <rect x="75" y="15" width="10" height="10" fill="#000000"/>
+  <rect x="15" y="25" width="10" height="10" fill="#000000"/>
+  <rect x="25" y="25" width="10" height="10" fill="#000000"/>
+  <rect x="45" y="25" width="10" height="10" fill="#000000"/>
+  <rect x="55" y="25" width="10" height="10" fill="#000000"/>
+  <rect x="75" y="25" width="10" height="10" fill="#000000"/>
+  <rect x="15" y="35" width="10" height="10" fill="#000000"/>
+  <rect x="35" y="35" width="10" height="10" fill="#000000"/>
+  <rect x="75" y="35" width="10" height="10" fill="#000000"/>
+  <rect x="15" y="45" width="10" height="10" fill="#000000"/>
+  <rect x="35" y="45" width="10" height="10" fill="#000000"/>
+  <rect x="45" y="45" width="10" height="10" fill="#000000"/>
+  <rect x="55" y="45" width="10" height="10" fill="#000000"/>
+  <rect x="65" y="45" width="10" height="10" fill="#000000"/>
+  <rect x="75" y="45" width="10" height="10" fill="#000000"/>
+  <rect x="15" y="55" width="10" height="10" fill="#000000"/>
+  <rect x="35" y="55" width="10" height="10" fill="#000000"/>
+  <rect x="75" y="55" width="10" height="10" fill="#000000"/>
+  <rect x="15" y="65" width="10" height="10" fill="#000000"/>
+  <rect x="25" y="65" width="10" height="10" fill="#000000"/>
+  <rect x="45" y="65" width="10" height="10" fill="#000000"/>
+  <rect x="55" y="65" width="10" height="10" fill="#000000"/>
+  <rect x="75" y="65" width="10" height="10" fill="#000000"/>
+  <rect x="15" y="75" width="10" height="10" fill="#000000"/>
+  <rect x="25" y="75" width="10" height="10" fill="#000000"/>
+  <rect x="35" y="75" width="10" height="10" fill="#000000"/>
+  <rect x="45" y="75" width="10" height="10" fill="#000000"/>
+  <rect x="55" y="75" width="10" height="10" fill="#000000"/>
+  <rect x="65" y="75" width="10" height="10" fill="#000000"/>
+  <rect x="75" y="75" width="10" height="10" fill="#000000"/>
+</svg>

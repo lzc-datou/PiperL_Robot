@@ -3,6 +3,8 @@ float64 speed_scale
 string purpose
 uint64 target_revision
 bool auto_execute
+# Gamepad-only stop generation token. Ignored for the ordinary task backend.
+uint64 guard_epoch
 ---
 bool success
 string message

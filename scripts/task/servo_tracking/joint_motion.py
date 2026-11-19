@@ -31,6 +31,10 @@ REPLAN_LIMIT_ERRORS = frozenset((
     '关节规划多项式加速度越限'))
 
 
+class HomeCanceled(ValueError):
+    """The operator released the home gesture; this is not a device fault."""
+
+
 def validate_plan_math(trajectory, actual, goal, model, config, scale):
     """Worker entry point: pure trajectory mathematics, never ROS/Node I/O."""
     from .core import validate_joint_plan
@@ -155,8 +159,11 @@ class JointMotion:
         self.guard.state, self.guard.reason = state, reason
         self.guard.stage_time = time.monotonic()
 
-    def fail(self, reason):
-        self.guard.stop(reason, fault=True)
+    def fail(self, reason, cause=None):
+        if isinstance(cause, HomeCanceled):
+            self.guard.stop(reason, paused=True, pause_cause='gamepad_home_canceled')
+        else:
+            self.guard.stop(reason, fault=True)
 
     def plan(self, request, response):
         g = self.guard
@@ -166,6 +173,12 @@ class JointMotion:
                 raise ValueError('请先停止跟踪并等待控制门和保持服务确认')
             if request.purpose not in ('ready', 'point', 'limit_recovery', 'home'):
                 raise ValueError('未知关节规划用途')
+            if g.gamepad_mode:
+                if request.purpose != 'home':
+                    raise ValueError('手柄会话只允许显式回零关节计划')
+                if int(request.guard_epoch) != g.epoch:
+                    raise ValueError('回零许可已过期；请松开 LB/Y 后重新请求')
+                g.gamepad_authority(require_home=True)
             if bool(request.auto_execute) != (request.purpose in ('ready', 'limit_recovery', 'home')):
                 raise ValueError('准备或关节调整自动执行，单点计划须单独确认执行')
             scale = float(request.speed_scale)
@@ -218,7 +231,7 @@ class JointMotion:
                 raise ValueError('规划起点已变化，请重新规划')
             self.request_plan(epoch, plan_id)
         except Exception as exc:
-            self.fail('关节规划准备失败：' + str(exc))
+            self.fail('关节规划准备失败：' + str(exc), exc)
 
     def request_plan(self, epoch, plan_id):
         g = self.guard
@@ -290,7 +303,7 @@ class JointMotion:
                 validate_plan_math, trajectory, self.start_q.copy(), self.goal_q.copy(),
                 self.guard.model, validation_config, self.scale)
         except Exception as exc:
-            self.fail('关节规划未通过检查：' + str(exc))
+            self.fail('关节规划未通过检查：' + str(exc), exc)
 
     def validated(self):
         future = self.pending_validation
@@ -329,9 +342,9 @@ class JointMotion:
                     self.request_plan(epoch, plan_id)
                     return
                 except Exception as retry_exc:
-                    self.fail('关节路径重新规划失败：' + str(retry_exc))
+                    self.fail('关节路径重新规划失败：' + str(retry_exc), retry_exc)
                     return
-            self.fail('关节路径检查失败：' + str(exc))
+            self.fail('关节路径检查失败：' + str(exc), exc)
 
     def command(self, request, response):
         response.success = False
@@ -346,7 +359,7 @@ class JointMotion:
                 self.begin_execution()
                 response.success, response.message = True, '正在准备执行'
             except (ValueError, RuntimeError) as exc:
-                self.fail(str(exc))
+                self.fail(str(exc), exc)
                 response.message = str(exc)
         else:
             response.message = '未知关节计划命令'
@@ -406,7 +419,7 @@ class JointMotion:
                 raise ValueError('关节执行控制门开启失败')
             self.dispatch()
         except Exception as exc:
-            self.fail('关节执行准备失败：' + str(exc))
+            self.fail('关节执行准备失败：' + str(exc), exc)
 
     def dispatch(self):
         g = self.guard
@@ -437,7 +450,7 @@ class JointMotion:
             handle = future.result()
         except Exception as exc:
             if self.current(epoch, plan_id, 'joint_executing'):
-                self.fail('关节动作请求失败：' + str(exc))
+                self.fail('关节动作请求失败：' + str(exc), exc)
             return
         if not handle.accepted:
             self.actions.pop(action_id, None)
@@ -474,7 +487,7 @@ class JointMotion:
             self.phase('joint_settling', '等待真实关节稳定到位')
             self.settle_since, self.settle_q = 0., None
         except Exception as exc:
-            self.fail(str(exc))
+            self.fail(str(exc), exc)
 
     def finish(self):
         # Preserve completion identity for Backend, but revoke the executable plan.

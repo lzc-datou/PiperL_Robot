@@ -1,4 +1,9 @@
-# 眼在手上：相机随末端运动，ArUco 标记固定在桌面。
+# 眼在手上：相机随末端运动，标定板固定在桌面。
+target: chessboard  # chessboard 或 aruco
+chessboard:
+  columns: 8  # 一行内角点数（不是格子数）
+  rows: 11    # 一列内角点数
+  square_size_mm: 15.0
 marker_id: 582
 # 打印后用尺/卡尺测量黑色方块外边长，单位米；不包含白边。
 # 填入实测值，例如实际为 69.6 mm 时填 0.0696，不要照抄示例。
@@ -7,8 +12,21 @@ camera_name: handeye_d405
 camera_namespace: handeye
 camera_serial: ''
 color_profile: 640x480x30
-robot_pose_topic: /feedback/tcp_pose
+# auto 在单点控制 /feedback/tcp_pose 与手柄 /piper_servo/feedback/tcp_pose 中
+# 选择唯一有发布者的官方 TCP 话题；也可显式填写绝对话题名。
+robot_pose_topic: auto
 marker_pose_topic: /aruco_single/pose
 base_frame: base_link
 end_frame: tcp_link
 min_samples: 20
+# 采样时只读反馈，不控制机械臂。停稳阈值相对窗口起点，不代表标定精度。
+capture:
+  duration_s: 1.0
+  timeout_s: 10.0
+  max_translation_m: 0.001
+  max_rotation_deg: 0.2
+  max_robot_gap_s: 0.05
+  max_static_gap_s: 0.1
+  max_age_s: 0.5
+  min_span_deg: 15.0
+  min_axis_ratio: 0.1

@@ -15,7 +15,7 @@
 
 - Linux 系统，已配置本项目 Python 环境。
 - CAN 接口已激活且有机械臂反馈；默认读取 `config/baseline.json` 中的 `can_port`（can0）。
-- 命令从项目根目录运行。CAN 激活步骤见 [手动命令](../../../docs/手动命令.md) 第 4 项；仅关节监控无需先启动驱动；笛卡尔坐标需要已启动官方 MoveIt。
+- 命令从项目根目录运行。CAN 连接使用 [控制面板](../control_panel/README.md)；仅关节监控无需使能或启动驱动，笛卡尔坐标需要已启动官方 MoveIt。
 
 ## 实时监控
 
@@ -111,3 +111,17 @@ bash scripts/piperl/run.sh python scripts/task/multi_point/run.py \
 多点整理、运动选项及障碍物配置见 [多点任务说明](../../task/multi_point/README.md)。
 
 反馈不完整、过期或各轴反馈时间差过大时，底部显示当前异常；数据恢复有效后自动清除。保存路径等操作结果不会被这些临时异常覆盖。
+
+## 记录手柄控制链路
+
+`gamepad_trace.py` 只读订阅已运行的手柄输入、JointJog、Servo 轨迹、三层关节状态与 backend、guard 状态。它不发布控制命令、不调用服务、不启动控制栈，不生成或触发运动。
+
+先按[手柄说明](../gamepad_control/README.md)正常启动与操作，再在另一终端使用相同 ROS domain 采样：
+
+```bash
+PIPERL_ROS_DOMAIN_ID=64 bash scripts/piperl/run.sh python scripts/tools/monitoring/gamepad_trace.py --duration 10
+```
+
+`--duration` 默认 10 秒，最大 60 秒；Ctrl+C 提前结束也保存摘要。`--output-dir` 可指定尚不存在的目录，默认写入 `outputs/gamepad_control/traces/<上海时间>/`，包含逐条消息 `trace.jsonl` 和汇总 `summary.json`。`--help` 不初始化 ROS 节点。
+
+摘要包含每个话题的消息数、接收到达间隔均值与最大值、JointJog 逐帧关节速度最大变化、实测关节位置逐帧最大变化，以及 backend 的 ACTIVE 状态样本数。逐帧变化与到达间隔用于定位输入、计算或传输波动，不等同于加速度或硬件采样周期。backend JSON 保留请求速度与滤波速度等状态字段，非有限数字存为 `null`。没有 ACTIVE 样本时，不能据此判断抖动是否改善；有 ACTIVE 样本也需要与相同操作条件的记录比较。

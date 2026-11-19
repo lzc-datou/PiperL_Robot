@@ -26,6 +26,7 @@ private:
   QDoubleSpinBox *position_[3], *rotation_[3], *dimensions_[3];
   QCheckBox *editing_;
   QLabel *status_;
+  QLabel *dimension_labels_[3];
   QWidget *form_;
   QPushButton *load_, *save_, *add_, *remove_, *update_, *apply_;
   QJsonArray data_;

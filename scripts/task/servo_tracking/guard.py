@@ -17,7 +17,7 @@ from moveit_msgs.msg import ServoStatus
 from action_msgs.msg import GoalStatusArray
 from action_msgs.srv import CancelGoal
 from .core import JOINTS, FreshJoints, RobotModel, load_config, validate_trajectory, validate_arm_mode, joint_speed_limits, HARDWARE_JOINT_SPEED_LIMITS
-from .joint_motion import JointMotion, JOINT_STATES, JOINT_FORWARD_STATES
+from .joint_motion import JointMotion, JOINT_STATES, JOINT_FORWARD_STATES, HomeCanceled
 from .stop_observer import StopObserver
 
 
@@ -47,6 +47,7 @@ class Guard(Node):
         self.declare_parameter('gamepad_mode', False)
         self.declare_parameter('gamepad_input_timeout_s', .20)
         self.declare_parameter('gamepad_gui_timeout_s', .30)
+        self.declare_parameter('gamepad_deadzone', .08)
         self.declare_parameter('require_verified_gamepad_link', True)
         self.declare_parameter('require_verified_gamepad_mapping', True)
         self.declare_parameter('gamepad_stop_settle_window_s', .30)
@@ -58,6 +59,7 @@ class Guard(Node):
         self.gamepad_mode = bool(self.get_parameter('gamepad_mode').value)
         self.gamepad_input_timeout = float(self.get_parameter('gamepad_input_timeout_s').value)
         self.gamepad_gui_timeout = float(self.get_parameter('gamepad_gui_timeout_s').value)
+        self.gamepad_deadzone = float(self.get_parameter('gamepad_deadzone').value)
         self.require_verified_gamepad_link = bool(self.get_parameter('require_verified_gamepad_link').value)
         self.require_verified_gamepad_mapping = bool(self.get_parameter('require_verified_gamepad_mapping').value)
         self.gamepad_input = None
@@ -159,6 +161,15 @@ class Guard(Node):
                 raise ValueError('该连接方式/轴映射尚未通过实机验证')
             self.gamepad_sequence = int(msg.sequence)
             self.gamepad_input, self.gamepad_received, self.gamepad_error = msg, now, ''
+            if self.state in JOINT_STATES and self.joint.purpose == 'home':
+                if msg.b:
+                    self.stop('手柄 B 停止锁定', fault=True)
+                elif (not msg.lb or not msg.home or any(msg.dpad) or
+                      any(abs(v) > self.gamepad_deadzone for v in msg.axes)):
+                    # Revoke in the input callback, before a queued planner or
+                    # gate-open reply can advance this action's epoch.
+                    self.stop('回零已取消；松开 LB/Y 并回中后重新操作',
+                              paused=True, pause_cause='gamepad_home_canceled')
         except (ValueError, TypeError) as exc:
             self.gamepad_input = None
             self.gamepad_received = 0.
@@ -166,7 +177,7 @@ class Guard(Node):
             if self.state in ACTIVE_STATES:
                 self.stop(self.gamepad_error, fault=True)
 
-    def gamepad_authority(self, require_lb=True):
+    def gamepad_authority(self, require_lb=True, require_home=False):
         if not self.gamepad_mode:
             return
         msg = self.gamepad_input
@@ -177,8 +188,17 @@ class Guard(Node):
             raise ValueError('该连接方式/轴映射尚未通过实机验证')
         if time.monotonic()-self.gui_heartbeat > self.gamepad_gui_timeout:
             raise ValueError('Qt 界面心跳超时')
+        joint = getattr(self, 'joint', None)
+        homing = (joint is not None and self.state in JOINT_STATES and joint.purpose == 'home')
         if require_lb and (not msg.lb or msg.b):
+            if (require_home or homing) and not msg.b:
+                raise HomeCanceled('LB 已松开，回零许可撤销')
             raise ValueError('LB 持续许可已撤销或 B 已停止')
+        if require_home or homing:
+            if not msg.home:
+                raise HomeCanceled('Y 已松开，回零许可撤销')
+            if any(abs(v) > self.gamepad_deadzone for v in msg.axes) or any(msg.dpad):
+                raise HomeCanceled('回零期间摇杆或方向键偏转，回零许可撤销')
         if self.count_publishers('gamepad/input') != 1:
             raise ValueError('检测到多个手柄输入来源')
 
@@ -200,6 +220,11 @@ class Guard(Node):
         if self.state in JOINT_STATES:
             # Servo is deliberately paused; its stale Cartesian status cannot
             # authorize or invalidate the independently validated joint action.
+            return
+        if self.state == 'running' and msg.code == 6 and self.gamepad_mode:
+            # Native JointJog has already halted the infeasible request.
+            # Keep validating its bounded trajectories so reverse input can
+            # retreat while LB/feedback/ownership watchdogs remain active.
             return
         if self.state == 'running' and msg.code in (2, 6):
             # Code 2 cannot be produced by the configured native JOINT_JOG
@@ -558,13 +583,14 @@ class Guard(Node):
         if self.state not in ACTIVE_STATES:
             return
         try:
-            if self.gamepad_mode and self.state in PREPARING_STATES + ('running',):
+            if self.gamepad_mode and self.state in PREPARING_STATES + ('running',) + JOINT_STATES:
                 sample = self.gamepad_input
                 if sample is not None and sample.b:
                     self.stop('手柄 B 停止锁定', fault=True)
                     return
                 if sample is not None and not sample.lb:
-                    self.stop('已松开 LB，撤销运动许可', paused=True)
+                    self.stop('已松开 LB，撤销运动许可', paused=True,
+                              pause_cause='gamepad_home_canceled' if self.state in JOINT_STATES and self.joint.purpose == 'home' else '')
                     return
                 self.gamepad_authority(require_lb=True)
             q = self.health()
@@ -613,15 +639,18 @@ class Guard(Node):
                 raise ValueError('Servo 输出中断')
             elif now-self.servo_received > .5:
                 raise ValueError('Servo 状态超时')
+        except HomeCanceled as exc:
+            self.stop(str(exc), paused=True, pause_cause='gamepad_home_canceled')
         except (ValueError, RuntimeError) as exc:
             self.stop(str(exc), fault=True)
 
     def publish_status(self):
-        status = {'state': self.state, 'reason': self.reason,
+        status = {'state': self.state, 'reason': self.reason, 'epoch': self.epoch,
                   'pause_cause': getattr(self, 'pause_cause', '') if self.state == 'paused' else '',
                   'gate_closed': self.closed, 'mode': 'real' if self.real else 'sim',
                   'other_action_active': self.action_active,
                   'gamepad_mode': self.gamepad_mode,
+                  'joint_bound_limited': bool(self.gamepad_mode and self.state == 'running' and self.servo_code == 6),
                   'input_age_s': None if not self.gamepad_received else time.monotonic()-self.gamepad_received,
                   'input_error': self.gamepad_error,
                   'stop_settled': self.stop_settled,

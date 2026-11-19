@@ -1,45 +1,83 @@
-# 手柄工具验证记录
+# 手柄控制当前验证矩阵
 
-日期：2026-11-14（Asia/Shanghai）
+更新日期：2026-11-18，Asia/Shanghai。当前改动包括 Y + LB 按住回零入口和共享 Qt 界面布局。以下分别记录界面证据、回零待验收项和 2026-11-17 两模式基线。原 430 项回归、构建和仿真不覆盖本次回零与布局改动。
 
-## 当前状态
+## 2026-11-18 界面布局检查
 
-专用手柄链路、PyQt5 界面、Linux evdev 输入、配置 profile、DLS → MoveIt Servo JointJog、共享 guard 和纯 mock 执行均已实现。代码构建及隔离仿真通过。没有接入实体冰原狼 2；设备轴/按键映射、有线/无线断连检测、实机使能和实机运动均未验证。
+| 范围 | 当前结论 | 证据范围 |
+| --- | --- | --- |
+| 手柄窗口 | 大按钮工作台已用真实 Qt 控件离线绘制并独立看图评审 | `outputs/ui_redesign/desktop_workstation/gamepad/after/`，1280 × 736、1040 × 680 与只读 960 × 680；包含六轴角度、XYZ/RPY、输入、锁定、反馈中断、边界提示和回零进度 |
+| RViz 插件 | 两个面板目标编译完成 | `piper_servo_panel`、`piper_task_panel` 使用原生 Qt 控件与共用字体资源；最新布局证据见 `outputs/ui_redesign/rviz_native/` |
+| 控制行为 | 未作本轮运行验收 | 保留 LB/B/Y、模式选择和关闭停止处理；离线截图不验证请求、停止、退出、实体映射或运动 |
 
-## 自动化测试
+全项目界面截图、渲染命令与范围见本机 `outputs/ui_redesign/README.md`。本轮未运行项目测试、ROS 控制栈或实机。
 
-- `bash scripts/piperl/build.sh`：6 个 ROS 包构建完成；colcon 提示一个不存在的可选 `.deps/servo/opt/ros/jazzy` 前缀，但不影响构建。
-- 手柄纯逻辑与 profile 测试：`PIPERL_ROS_DOMAIN_ID=64 bash scripts/piperl/run.sh --python-only python -m unittest tests.test_gamepad_core -v`，9 项通过。
-- 共享 Servo 回归：`tests.test_servo_damped_velocity`、`tests.test_servo_controller_sync`、`tests.test_servo_hold_guard`、`tests.test_servo_guard_recovery`、`tests.test_servo_feedback_bounds`，共 55 项通过。
+## Y + LB 回零待验收
 
-## 纯仿真集成
+| 范围 | 当前结论 | 需要的证据 |
+| --- | --- | --- |
+| 新消息与 ROS 构建 | 6 个包构建完成 | `bash scripts/piperl/build.sh` 退出码 0；已生成 `GamepadInput.home` 与 `PlanJointTarget.guard_epoch`；最近日志见 `piperl_ws/log/build_2026-11-18_10-15-27/` |
+| 1 秒确认与持续许可 | 待纯软件及仿真验证 | 停稳、中立起步，Y + LB 保持满 1 秒，规划与运动全程保持 |
+| 取消、停止与旧计划屏障 | 待纯软件及仿真验证 | 三个回零阶段松开任一键、偏转输入均取消；B/断线/健康与界面异常锁定；迟到响应和旧计划不续跑 |
+| 规划与碰撞 | 待仿真验证 | 官方 MoveIt 零角目标、固定 10% 比例、碰撞或规划失败停止，无直接运动自动回退 |
+| 界面与退出 | 布局已离线显示；交互与仿真待验证 | 进度、Y 输入与禁用状态有示例截图；取消/红停止/关闭/Ctrl+C，以及 guard 丢失的处理仍待运行验收 |
+| 实体 Y 映射与失联 | 待现场确认 | 当前有线/无线各自检查 Y/home，默认 `BTN_WEST` 或实际 `BTN_NORTH`，停止与重连不恢复 |
+| 实机回零 | 未验收 | 真实模型/零位一致性、规划路径、持续许可与取消响应；不以软件或仿真结果代替 |
 
-命令：
+回零功能实现阶段完成源码审阅、接口生成与构建，后续界面改版补充纯 Qt 示例截图，未运行回归测试、仿真或实机。回零不校准、不自动使能，两种模式滑条不改变固定 10% 回零比例。
+
+## 2026-11-17 已验证基线，不含 Y 回零
+
+| 范围 | 当前结论 | 证据范围 |
+| --- | --- | --- |
+| 文档与配置 | 已静态核对 | 30 份 Markdown 无缺失相对链接，标题锚点检查无异常；参数已对照当前配置 |
+| ROS 构建 | 通过，6 个包 | `bash scripts/piperl/build.sh` 返回 0 |
+| 两模式隔离仿真 | 通过 | Domain 76、fixture、GenericSystem，`passed=true`、`real_hardware=false` |
+| 选轴与模式切换 | 仿真通过 | 边沿选轴、不循环、活动时拒绝切换、两模式独立比例、切换后无 LB 不动 |
+| 单轴与 TCP 方向 | 仿真 24 个方向通过 | J1–J6 正负 12 个方向、TCP 六自由度正负 12 个方向，包含模拟 FK 反馈符号核对 |
+| 停止与恢复 | 两模式仿真通过 | LB 释放、B 锁定、fixture 输入中断、重连不自动恢复、明确恢复后需新 LB |
+| 关节边界退回 | 独立仿真通过 | 向外缩放为 0 且会话 ACTIVE，保持 LB 反向可退回，B 仍锁定 |
+| 退出清理 | 两轮通过 | 两次清理 `remaining_pids=[]`、`errors=[]` |
+| 平滑、共享逻辑、界面与桥接回归 | 430 项通过，0 跳过/失败/错误 | 含滤波、假服务时序、退出生命周期、Qt 界面和状态队列；不据此声明实机抖动消除 |
+| 实体手柄与断线 | 仍需逐项现场确认 | 映射、有线与无线分别检查，不能用 fixture 替代 |
+| 实机运动与抖动 | 未完成本轮验收 | 平顺性、真实停止响应、模型/零位一致性 |
+
+## 2026-11-17 基线构建与仿真
 
 ```bash
-PIPERL_ROS_DOMAIN_ID=64 bash scripts/piperl/run.sh python tests/gamepad_sim_integration.py
+bash scripts/piperl/build.sh
+PIPERL_ROS_DOMAIN_ID=76 bash scripts/piperl/run.sh python tests/gamepad_sim_integration.py
 ```
 
-结果：使用 domain 64 的官方 mock/FakeSystem、MoveIt Servo、guard 和 JTC；输入源为专用 `fixture`，没有启动官方实机驱动或发 CAN。
+两条命令均返回 0。集成脚本自行管理模拟栈，审计到硬件插件为 `mock_components/GenericSystem`，无官方实机驱动。单轴非选定关节的 JointJog 为零，并检查 Servo 轨迹各点位置/速度及模拟反馈没有残留运动。
 
-- 六个末端自由度的正负 12 个方向均产生非零 DLS JointJog。
-- 通过 Servo 输出话题观察到 47 条轨迹消息。
-- 松开 LB 后，guard 以新鲜关节反馈确认停稳；B 停止并锁定通过；松开 B 后显式恢复至等待新 LB 的状态通过。
-- 停止发布 fixture 输入后，输入租约超时触发锁定并确认停稳；输入恢复后显式恢复通过。
-- 测试清理只向本次启动的 ROS 进程组发送 SIGINT；`cleanup.json` 记录退出码 0、`remaining_pids: []`。ROS 节点日志中的退出信号/清理期 `KeyboardInterrupt` 出现在仿真检查完成后的 teardown。
-- 集成脚本在 [gamepad_sim_integration.py](../../../tests/gamepad_sim_integration.py)；隔离栈日志位于 `outputs/gamepad_control/sim_integration/stack.log`。
+本机最终结果目录为 `outputs/gamepad_control/two_modes_20261117_224505_d76_2006900/`，其中 `summary.json` 记录 24 个方向、切换、停止、边界、源码 SHA256 和清理结果。还检查了笛卡尔实际运动后切到 J2 的无残留行为、请求与模拟 FK 运动方向对齐，以及松开 LB 后首条零速度 Jog 小于 120 ms。后者是该 mock 的观测结果，不是实机停止时间。
 
-这证明 mock 执行链可工作，不代表实体手柄兼容或实机安全。测试探针只订阅 guard 之前的 Servo 输出；JTC 命令话题保持 guard 独占订阅。
+边界子轮验证包含保持 LB 时反向退回，不需因边界警告先点击恢复。两轮模拟栈和 supervisor 的清理报告均无残留，另已核对相应进程组不存在。上述目录为本机生成物，不随源码克隆分发。
 
-## 界面与设备输入
+界面预览为纯 Qt 示例，保存于本机 `outputs/gamepad_control/ui_preview/` 的 `single_axis.png`、`cartesian.png`、`locked.png` 和 `input.png`。它们证明布局可显示，不证明实体输入、运动或实机效果。
 
-- 已使用 PyQt5 创建真实窗口并检查布局；[离线界面截图](/home/lzc/.codex/visualizations/2026/11/14/01a1d8b2-063b-7e42-a8df-228ee11f774b/gamepad-window.png)明确标记为示例输入，不显示伪造的机械臂反馈。
-- 设备读取使用 Linux evdev ioctl，不依赖 `python-evdev`。本环境没有发现可读取的 `/dev/input/event*` 手柄设备，无法验证实体轴值、回中噪声、按键代码、拔线、无线关机、接收器保留时断链或重连行为。
-- profile 映射可配置 `left_x/left_y/right_x/right_y` 对应 evdev 轴代码与反相、LB/B 按键代码和 D-pad 方向；当前 `flydigi_direwolf2.yaml` 只是起始模板，未校准。
+## 2026-11-17 基线回归
 
-## 实机边界
+统一回归共 430 项，跳过、失败、错误均为 0，退出码为 0。涵盖共享 Servo、手柄数学与假服务状态机、进程生命周期、7 项纯 Qt 界面检查及 4 项桥接检查，每项仅计一次。
 
-- `real` 模式需要 `evdev`，并要求操作者显式确认链路失联与映射已验证；guard 拒绝 fixture 和未验证标记。标记本身不证明硬件已验证。
-- 本次没有启动 `--mode real`，没有使能、回零、标定、主动 CAN、实机运动或停止用户已有任务。
-- 需在以后安排实体手柄验证，分别观察 USB/无线模式、接收器保持连接时手柄关闭、拔线/重连，并记录检测时延。只有确认可靠失联检测与映射后，才可由用户另行安排实机验收。
+桥接检查在无控制栈的 Domain 77 进行，包含 20 Hz 界面刷新处理 50 Hz 输入和各 10 Hz 状态，验证多消息分发及 4 ms 调度预算。测试只发布状态，不发送控制请求。它不代表真实设备链路验收。
 
+完整命令、模块、计数、源码 SHA256 与逐项日志保存在本机 `outputs/gamepad_control/verification_20261117_225028_d77_2009680/` 的 `unit_tests.json`、`unit_tests.log` 和 `SUMMARY.md`；常用复现入口见 [测试说明](../../../tests/README.md)。
+
+## 文档与证据边界
+
+`python3 scripts/tools/maintenance/audit_project.py --json` 扫描 30 份 Markdown，缺失相对链接 0。另行核对标题锚点无异常，日常文档中的底层 CAN/激活/ROS 使能命令已清理。审计仍会提示本机生成目录引用，这是静态文档检查，不是运动验证。
+
+- 按 [仿真指南](README.md) 完成实体输入的可见检查，再按 [首次实机操作](REAL_MACHINE.md) 进行现场验收。
+- `--verified-link`、`--verified-mapping` 是操作者确认，不是自动验收结果。
+- 输入低通、加速度平滑和边界限速是软件机制，不能据此保证实机无抖动或认证安全停止。
+- fixture 失联是模拟输入故障，不代表实体 USB 拔线或无线失联已验收。
+
+## 历史与复现入口
+
+- [旧版实现、界面、实体输入读取与仿真记录](../../../docs/history/gamepad_control/2026-11-17-validation-history.md)
+- [2026-11-14 原开发方案](../../../docs/history/gamepad_control/2026-11-14-development-plan.md)，旧架构和参数不作为当前要求
+- [测试目录](../../../tests/README.md)，运行前确认隔离环境与脚本适用版本
+
+历史日志与截图保存在本机。无线链路与实机运动需各自记录当前设备、连接方式、版本和实测结果。

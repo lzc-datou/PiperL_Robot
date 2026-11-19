@@ -84,7 +84,7 @@ class PreviewRuntime(Runtime):
         upstream = Path(get_package_share_directory('agx_arm_moveit'))/'config/moveit.rviz'
         config = yaml.safe_load(upstream.read_text())
         config['Panels'] = [dict(Class='rviz_common/Displays', Name='Displays')]
-        config['Window Geometry'] = dict(Width=1400, Height=900)
+        config['Window Geometry'] = dict(Width=1100, Height=680)
         entries = [dict(Class='rviz_default_plugins/Grid', Name='Grid', Value=True)]
         entries.append({'Class':'moveit_rviz_plugin/PlanningScene', 'Name':'Virtual scene (solid robot = first point)',
             'Value':True, 'Enabled':True, 'Robot Description':'robot_description',
@@ -99,7 +99,8 @@ class PreviewRuntime(Runtime):
             'Enabled':True, 'Topic':{'Value':'/obstacle_avoidance/markers','Reliability Policy':'Reliable',
             'Durability Policy':'Transient Local','History Policy':'Keep Last','Depth':1}})
         config['Visualization Manager']['Displays'] = [{'Class':'piper_multi_point_rviz/TimeCompatibleGroup',
-            'Name':'Displays (time compatible)', 'Value':True, 'Displays':entries}]
+            'Name':'Displays (time compatible)', 'Value':True, 'Displays':entries,
+            'Fit Window On Startup':True}]
         config['Visualization Manager']['Global Options']['Fixed Frame'] = self.client.settings['frame_id']
         config['Visualization Manager']['Views']['Current'].update(
             {'Distance':1.65,'Focal Point':{'X':.20,'Y':0.,'Z':.40},'Yaw':.8,'Pitch':.45})

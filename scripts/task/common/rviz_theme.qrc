@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/piper/rviz">
+    <file alias="theme.qss">rviz_theme.qss</file>
+  </qresource>
+</RCC>

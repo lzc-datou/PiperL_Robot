@@ -21,13 +21,14 @@ scripts/task/<任务名>/
 
 | 目录 | 用途 |
 | --- | --- |
+| [single_point](single_point/README.md) | 官方单点 Plan/Execute 操作说明与离线模型入口 |
 | [multi_point](multi_point/README.md) | 持续操作入口：终端 + 独立 RViz 面板、任务切换、逐点到位、虚拟障碍物 |
 | [obstacle_avoidance](obstacle_avoidance/README.md) | 多点、多障碍物双路径规划/执行、同窗口单点控制与场景编辑 |
 | [common](common/README.md) | 点位格式、官方 MoveIt 接口、真实反馈、场景、日志和启动管理 |
 | [servo_tracking](servo_tracking/README.md) | XYZ + 姿态连续伺服、单点/恢复/回零与绿色工作空间；纯仿真/实机独立启动 |
 
-任务使用官方轨迹执行链路，不自行发送 CAN 指令或做轨迹插值。任务不会自动使能机械臂。
+任务使用官方轨迹执行链路，不自行发送 CAN 指令或做轨迹插值。实机任务启动前，先用 [控制面板](../tools/control_panel/README.md) 完成 CAN 连接和使能确认；任务不自动使能。手柄操作从 [工具入口](../tools/gamepad_control/README.md) 开始，专用后端位于 Servo 包中。
 
-Servo 按三层分工：`cartesian_control.py` 负责无 ROS 的控制数学，`node.py` 负责目标验证和算法调用，`guard.py` / `joint_motion.py` 负责控制许可与官方执行。算法配置位于 [control.yaml](servo_tracking/config/control.yaml)，硬件、反馈、规划和关节约束位于 [config.yaml](servo_tracking/config/config.yaml)；输入输出、五种算法和同增益对照见 [控制接口](../../docs/项目结构与控制接口.md#核心算法输入与输出)。
+Servo 按三层分工：`cartesian_control.py` 负责无 ROS 的控制数学，`node.py` 负责目标验证和算法调用，`guard.py` / `joint_motion.py` 负责控制许可与官方执行。算法配置位于 [control.yaml](servo_tracking/config/control.yaml)，硬件、反馈、规划和关节约束位于 [config.yaml](servo_tracking/config/config.yaml)；输入输出、五种算法和同增益对照见 [Servo 控制接口](../../docs/Servo控制接口.md#核心算法输入与输出)。
 
 启动：`bash scripts/piperl/run.sh python scripts/task/multi_point/run.py --rviz --interactive`。每轮结束可重新规划，驱动与 RViz 不重启。

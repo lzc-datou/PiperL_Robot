@@ -1,43 +1,64 @@
 #include "scene_editor.hpp"
 #include <QVBoxLayout>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QScrollArea>
+#include <QFrame>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QDir>
 #include <QJsonDocument>
 #include <QSignalBlocker>
+#include <QStyle>
 #include <cmath>
 #include <algorithm>
 
 namespace piper_multi_point_rviz {
 SceneEditor::SceneEditor(QWidget *parent) : QWidget(parent) {
-  auto *root=new QVBoxLayout(this);root->setContentsMargins(0,0,0,0);
-  auto *scroll=new QScrollArea(this);scroll->setWidgetResizable(true);root->addWidget(scroll);
-  auto *content=new QWidget;scroll->setWidget(content);auto *layout=new QVBoxLayout(content);
+  auto *root=new QVBoxLayout(this);root->setContentsMargins(0,0,0,0);root->setSpacing(8);
+  auto *scroll=new QScrollArea(this);scroll->setWidgetResizable(true);scroll->setFrameShape(QFrame::NoFrame);
+  scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);root->addWidget(scroll,1);
+  auto *content=new QWidget;scroll->setWidget(content);auto *layout=new QVBoxLayout(content);layout->setContentsMargins(8,10,8,10);layout->setSpacing(12);layout->setAlignment(Qt::AlignTop);
+  auto *fileTitle=new QLabel("场景文件",content);fileTitle->setProperty("role","sectionTitle");layout->addWidget(fileTitle);
   auto *files=new QHBoxLayout;load_=new QPushButton("加载场景");save_=new QPushButton("另存为…");
   files->addWidget(load_);files->addWidget(save_);layout->addLayout(files);
+  load_->setToolTip("加载场景文件为草稿；应用场景后才参与碰撞检测");save_->setToolTip("将已应用的场景保存为新的 YAML 文件");
+  status_=new QLabel;status_->setObjectName("sceneStatus");status_->setProperty("role","status");status_->setWordWrap(true);
+  status_->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);layout->addWidget(status_);
+  auto *objectTitle=new QLabel("物体草稿",content);objectTitle->setProperty("role","sectionTitle");layout->addWidget(objectTitle);
   editing_=new QCheckBox("拖拽编辑");editing_->setToolTip("仅显示选中物体的拖拽手柄；应用后才参与碰撞检测");layout->addWidget(editing_);
   objects_=new QComboBox;objects_->setObjectName("sceneObjects");layout->addWidget(objects_);
   auto *actions=new QHBoxLayout;add_=new QPushButton("新增");remove_=new QPushButton("删除");
   actions->addWidget(add_);actions->addWidget(remove_);layout->addLayout(actions);
-  form_=new QWidget;auto *form=new QFormLayout(form_);form->setContentsMargins(0,0,0,0);
-  id_=new QLineEdit;id_->setObjectName("objectId");id_->setPlaceholderText("唯一名称（字母/数字/_/-）");form->addRow("名称",id_);
+  form_=new QWidget;auto *form=new QFormLayout(form_);form->setContentsMargins(0,0,0,0);form->setSpacing(8);
+  form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);form->setFormAlignment(Qt::AlignTop);
+  id_=new QLineEdit;id_->setObjectName("objectId");id_->setPlaceholderText("字母、数字、_ 或 -");id_->setMinimumWidth(0);form->addRow("名称",id_);
   shape_=new QComboBox;shape_->addItem("箱体","box");shape_->addItem("球体","sphere");shape_->addItem("圆柱","cylinder");form->addRow("形状",shape_);
-  auto row=[&](const QString &label,QDoubleSpinBox **fields,double lower,double upper,int decimals) {
-    auto *widget=new QWidget;auto *line=new QHBoxLayout(widget);line->setContentsMargins(0,0,0,0);line->setSpacing(3);
-    for(int i=0;i<3;++i){fields[i]=new QDoubleSpinBox;fields[i]->setRange(lower,upper);fields[i]->setDecimals(decimals);fields[i]->setSingleStep(decimals==1?5.:.01);fields[i]->setMinimumWidth(55);line->addWidget(fields[i]);}
-    form->addRow(label,widget);
+  form_->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Fixed);layout->addWidget(form_);
+  auto row=[&](const QString &label,const QStringList &axes,QDoubleSpinBox **fields,double lower,double upper,int decimals,bool dimensions=false) {
+    auto *title=new QLabel(label,content);title->setProperty("role","sectionTitle");layout->addWidget(title);
+    auto *widget=new QWidget;auto *line=new QGridLayout(widget);line->setContentsMargins(0,0,0,0);line->setHorizontalSpacing(6);line->setVerticalSpacing(3);
+    widget->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Fixed);
+    for(int i=0;i<3;++i){
+      auto *axis=new QLabel(axes[i],widget);axis->setProperty("role","muted");if(dimensions)dimension_labels_[i]=axis;
+      fields[i]=new QDoubleSpinBox;fields[i]->setRange(lower,upper);fields[i]->setDecimals(decimals);fields[i]->setSingleStep(decimals==1?5.:.01);
+      fields[i]->setMinimumWidth(0);fields[i]->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);fields[i]->setAccessibleName(label+" "+axes[i]);
+      line->addWidget(axis,0,i);line->addWidget(fields[i],1,i);line->setColumnStretch(i,1);
+    }
+    layout->addWidget(widget);
   };
-  row("XYZ (m)",position_,-100.,100.,3);row("RPY (°)",rotation_,-180.,180.,1);row("尺寸 (m)",dimensions_,.001,100.,3);
+  row("位置 · m",{"X","Y","Z"},position_,-100.,100.,3);
+  row("姿态 · °",{"Roll","Pitch","Yaw"},rotation_,-180.,180.,1);
+  row("尺寸 · m",{"长","宽","高"},dimensions_,.001,100.,3,true);
   for(int i=0;i<3;++i){position_[i]->setObjectName("position"+QString::number(i));rotation_[i]->setObjectName("rotation"+QString::number(i));dimensions_[i]->setObjectName("dimension"+QString::number(i));}
-  layout->addWidget(form_);update_=new QPushButton("写入草稿");apply_=new QPushButton("应用场景");layout->addWidget(update_);layout->addWidget(apply_);
+  update_=new QPushButton("写入草稿");apply_=new QPushButton("应用场景");apply_->setProperty("role","primary");
+  auto *commit=new QHBoxLayout;commit->setSpacing(8);commit->addWidget(update_,1);commit->addWidget(apply_,1);layout->addLayout(commit);
   update_->setToolTip("将表单数值写入草稿；再点击应用场景以更新碰撞检测");
   apply_->setToolTip("应用完整草稿并关闭拖拽手柄；旧预览作废，需要重新规划");
   update_->setObjectName("writeDraft");apply_->setObjectName("applyScene");
-  status_=new QLabel;status_->setObjectName("sceneStatus");
-  status_->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);layout->addWidget(status_);layout->addStretch();
+  for(auto *button:{load_,save_,add_,remove_,update_,apply_}){button->setMinimumHeight(52);button->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Fixed);}
+  layout->addStretch();
   connect(load_,&QPushButton::clicked,this,[this]{auto path=QFileDialog::getOpenFileName(this,"加载场景",directory_,"YAML (*.yaml *.yml)");if(!path.isEmpty()) emit command("scene_load",path);});
   connect(save_,&QPushButton::clicked,this,[this]{auto path=QFileDialog::getSaveFileName(this,"场景另存为（使用新文件名）",QDir(directory_).filePath("scene_custom.yaml"),"YAML (*.yaml *.yml)");if(!path.isEmpty()) emit command("scene_save",path);});
   connect(editing_,&QCheckBox::toggled,this,[this](bool value){emit command("scene_edit",value?"true":"false");});
@@ -58,7 +79,8 @@ SceneEditor::SceneEditor(QWidget *parent) : QWidget(parent) {
 void SceneEditor::updateDimensions(){
   const auto shape=shape_->currentData().toString();int count=shape=="box"?3:shape=="sphere"?1:2;
   const QStringList names=shape=="box"?QStringList{"长","宽","高"}:shape=="sphere"?QStringList{"半径"}:QStringList{"高度","半径"};
-  for(int i=0;i<3;++i){dimensions_[i]->setVisible(i<count);if(i<count)dimensions_[i]->setToolTip(names[i]+"（米）");}
+  auto *grid=qobject_cast<QGridLayout*>(dimensions_[0]->parentWidget()->layout());
+  for(int i=0;i<3;++i){dimensions_[i]->setVisible(i<count);dimension_labels_[i]->setVisible(i<count);grid->setColumnStretch(i,i<count?1:0);if(i<count){dimension_labels_[i]->setText(names[i]);dimensions_[i]->setToolTip(names[i]+"（米）");dimensions_[i]->setAccessibleName(names[i]+"，米");}}
 }
 void SceneEditor::fillObject(){
   const int index=objects_->currentIndex();if(index<0 || index>=data_.size())return;
@@ -96,6 +118,10 @@ void SceneEditor::updateState(const QJsonObject &state,bool idle){
   if(state["state"].toString()=="ERROR"){
     status_->setText("操作未完成 · 悬停查看");
     status_->setToolTip(state["message"].toString()+"\n"+file_);
+  }
+  const QString tone=state["state"].toString()=="ERROR"?"danger":dirty || state["scene_editing"].toBool()?"warning":"active";
+  if(status_->property("tone").toString()!=tone) {
+    status_->setProperty("tone",tone);status_->style()->unpolish(status_);status_->style()->polish(status_);
   }
 }
 }

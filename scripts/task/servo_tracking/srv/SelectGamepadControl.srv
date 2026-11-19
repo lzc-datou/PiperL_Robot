@@ -1,0 +1,6 @@
+string control_mode
+uint8 joint_index
+---
+bool success
+string message
+uint64 revision

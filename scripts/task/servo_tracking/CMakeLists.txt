@@ -2,12 +2,13 @@ cmake_minimum_required(VERSION 3.16)
 project(piper_servo_tracking)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "srv/PlanJointTarget.srv" "srv/JointPlanCommand.srv" "msg/GamepadInput.msg"
+  "srv/PlanJointTarget.srv" "srv/JointPlanCommand.srv" "srv/SelectGamepadControl.srv" "msg/GamepadInput.msg"
   DEPENDENCIES std_msgs)
 find_package(rclcpp REQUIRED)
 find_package(rviz_common REQUIRED)
@@ -18,7 +19,8 @@ find_package(std_srvs REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Widgets)
 ament_python_install_package(servo_tracking PACKAGE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 add_library(piper_servo_panel SHARED rviz_panel/panel.cpp rviz_panel/panel.hpp
-  rviz_panel/workspace_display.cpp rviz_panel/target_ghost_display.cpp)
+  rviz_panel/workspace_display.cpp rviz_panel/target_ghost_display.cpp
+  "${CMAKE_CURRENT_SOURCE_DIR}/../common/rviz_theme.qrc")
 ament_target_dependencies(piper_servo_panel rclcpp rviz_common rviz_default_plugins pluginlib std_msgs std_srvs)
 target_link_libraries(piper_servo_panel Qt5::Widgets
   moveit_ros_visualization::moveit_robot_state_rviz_plugin_core)

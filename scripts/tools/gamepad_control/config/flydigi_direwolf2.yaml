@@ -10,6 +10,8 @@ evdev:
   buttons:
     lb: BTN_TL
     b: BTN_EAST
+    # XInput Y uses BTN_Y / BTN_WEST; confirm the physical Y in input mode.
+    home: BTN_WEST
   dpad:
     up: ABS_HAT0Y:-1
     down: ABS_HAT0Y:1

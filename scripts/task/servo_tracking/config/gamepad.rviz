@@ -1,0 +1,54 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Global Options:
+    Background Color: 36; 40; 46
+    Fixed Frame: base_link
+    Frame Rate: 30
+  Displays:
+    - Class: piper_servo_tracking/TimeCompatibleGroup
+      Name: PiPER-L gamepad
+      Fit Window On Startup: true
+      Value: true
+      Displays:
+        - Class: rviz_default_plugins/Grid
+          Name: Ground
+          Value: true
+          Cell Size: 0.1
+          Plane Cell Count: 20
+          Color: 105; 110; 118
+        - Class: rviz_default_plugins/RobotModel
+          Name: PiPER-L
+          Value: true
+          Description Source: Topic
+          Description Topic:
+            Value: /piper_servo/robot_description
+            Durability Policy: Transient Local
+            Reliability Policy: Reliable
+            Depth: 1
+          Visual Enabled: true
+          Collision Enabled: false
+          Alpha: 1.0
+        - Class: rviz_default_plugins/Axes
+          Name: TCP axes
+          Value: true
+          Reference Frame: tcp_link
+          Length: 0.08
+          Radius: 0.004
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 1.8
+      Focal Point: {X: 0.15, Y: 0.0, Z: 0.25}
+      Pitch: 0.45
+      Yaw: 0.7
+      Target Frame: base_link
+  Value: true
+Window Geometry:
+  Width: 1100
+  Height: 680

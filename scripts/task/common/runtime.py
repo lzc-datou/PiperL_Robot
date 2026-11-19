@@ -139,6 +139,9 @@ class Runtime:
         config.write_text(yaml.safe_dump({'/**':{'ros__parameters':params}},sort_keys=False))
         upstream=Path(get_package_share_directory('agx_arm_moveit'))/'config/moveit.rviz'
         display=yaml.safe_load(upstream.read_text())
+        # Saved desktop geometry/dock state belongs to the upstream author's
+        # screen. Start owned windows without replaying those size constraints.
+        display['Window Geometry']={'Width':1100,'Height':680}
         for item in display['Visualization Manager']['Displays']:
             if item.get('Class')=='moveit_rviz_plugin/MotionPlanning':
                 item.setdefault('Scene Robot',{}).update({'Robot Alpha':1.0,'Show Robot Visual':True,'Show Robot Collision':False})
@@ -161,7 +164,8 @@ class Runtime:
         entries=display['Visualization Manager']['Displays']
         display['Visualization Manager']['Displays']=[{
             'Class':'piper_multi_point_rviz/TimeCompatibleGroup',
-            'Name':'Displays (time compatible)','Value':True,'Displays':entries}]
+            'Name':'Displays (time compatible)','Value':True,'Displays':entries,
+            'Fit Window On Startup':True}]
         rviz_config=self.logdir/'task.rviz'
         rviz_config.write_text(yaml.safe_dump(display,sort_keys=False))
         self.rviz_process=self.spawn('rviz',['bash','scripts/piperl/run.sh','ros2','run','rviz2','rviz2','-d',str(rviz_config),

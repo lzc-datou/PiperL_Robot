@@ -4,12 +4,14 @@
 #include <QMap>
 #include <QPushButton>
 #include <QGridLayout>
+#include <QLabel>
 
 namespace piper_multi_point_rviz {
 class MotionControls : public QWidget {
   Q_OBJECT
 public:
   explicit MotionControls(QWidget *parent=nullptr);
+  QWidget *persistentActions() const {return persistent_;}
   void updateState(const QJsonObject &state, bool online, bool idle,
                    bool selected_loaded, bool preview_visible);
 signals:
@@ -18,6 +20,8 @@ private:
   void arrange(bool comparison);
   QMap<QString,QPushButton*> buttons_;
   QGridLayout *grid_;
+  QWidget *persistent_;
+  QLabel *baseline_, *avoidance_;
   bool comparison_=false;
 };
 }

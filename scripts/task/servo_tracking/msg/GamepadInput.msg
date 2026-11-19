@@ -12,3 +12,4 @@ float32[4] axes
 int8[4] dpad
 bool lb
 bool b
+bool home

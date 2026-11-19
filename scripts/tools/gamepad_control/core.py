@@ -1,5 +1,5 @@
-"""Pure input validation and fixed Direwolf 2 velocity mapping."""
-from dataclasses import dataclass
+"""Pure gamepad input, control selection, and velocity intent."""
+from dataclasses import dataclass, field
 import math
 import time
 
@@ -17,6 +17,55 @@ class InputFrame:
     connected: bool = True
     link_verified: bool = False
     mapping_verified: bool = False
+    home: bool = False
+
+
+CONTROL_MODES = ('single_axis', 'cartesian')
+
+
+@dataclass
+class ControlSelection:
+    """Backend-owned selection; each mode remembers its own speed scale."""
+    control_mode: str = 'single_axis'
+    joint_index: int = 1
+    speed_scales: dict = field(default_factory=lambda: dict.fromkeys(CONTROL_MODES, .20))
+    revision: int = 0
+
+    def __post_init__(self):
+        self._validate(self.control_mode, self.joint_index)
+        self.speed_scales = dict(self.speed_scales)
+        if set(self.speed_scales) != set(CONTROL_MODES):
+            raise ValueError('需要两种控制模式的独立速度比例')
+        for value in self.speed_scales.values():
+            self._validate_speed(value)
+
+    @staticmethod
+    def _validate(control_mode, joint_index):
+        if control_mode not in CONTROL_MODES:
+            raise ValueError('控制模式必须是 single_axis 或 cartesian')
+        if isinstance(joint_index, bool) or not isinstance(joint_index, int) or not 1 <= joint_index <= 6:
+            raise ValueError('请选择 J1 到 J6 中的一个关节')
+
+    @staticmethod
+    def _validate_speed(value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not .05 <= value <= 1.:
+            raise ValueError('速度比例必须在 5% 到 100% 之间')
+
+    @property
+    def speed_scale(self):
+        return self.speed_scales[self.control_mode]
+
+    def set_speed(self, value):
+        self._validate_speed(value)
+        self.speed_scales[self.control_mode] = float(value)
+
+    def select(self, control_mode, joint_index):
+        self._validate(control_mode, joint_index)
+        if (control_mode, joint_index) == (self.control_mode, self.joint_index):
+            return False
+        self.control_mode, self.joint_index = control_mode, joint_index
+        self.revision += 1
+        return True
 
 
 def _finite_axes(axes):
@@ -43,8 +92,39 @@ def _cap(values, limit):
     return tuple(v*factor for v in values)
 
 
+class VelocityIntentFilter:
+    """One time-based filter for six-axis velocity intent, before joint solving.
+
+    The owner resets it whenever motion permission ends. Stop requests never
+    pass through this filter. It does not scale speed or generate trajectories.
+    """
+    def __init__(self, time_constant_s):
+        self.time_constant_s = float(time_constant_s)
+        self.reset()
+
+    def reset(self):
+        self.value = (0.,)*6
+        self.last_time = None
+
+    def update(self, target, now):
+        target = tuple(float(v) for v in target)
+        if len(target) != 6 or not all(math.isfinite(v) for v in target) or not math.isfinite(now):
+            raise ValueError('手柄速度滤波需要六维有限速度和有效时间')
+        if self.last_time is None:
+            self.last_time = now
+            return self.value
+        elapsed = now-self.last_time
+        if elapsed <= 0 or elapsed > .10:
+            self.reset()
+            raise ValueError('手柄控制周期中断，已清除速度历史，请检查后恢复')
+        self.last_time = now
+        alpha = -math.expm1(-elapsed/self.time_constant_s)
+        self.value = tuple(old+alpha*(new-old) for old,new in zip(self.value,target))
+        return self.value
+
+
 def map_velocity(frame: InputFrame, speed_scale=.20, deadzone=.08,
-                 linear_max=.05, angular_max=.25, dpad_scale=.35, response_exponent=1.5):
+                 linear_max=.30, angular_max=1.50, dpad_scale=.35, response_exponent=1.5):
     """Return base_link [vx,vy,vz,wx,wy,wz], SI units per second."""
     axes = _finite_axes(frame.axes)
     if not math.isfinite(speed_scale) or not .05 <= speed_scale <= 1.:
@@ -59,6 +139,32 @@ def map_velocity(frame: InputFrame, speed_scale=.20, deadzone=.08,
     linear = _cap(tuple(v*linear_max*speed_scale for v in linear), linear_max*speed_scale)
     angular = _cap(tuple(v*angular_max*speed_scale for v in angular), angular_max*speed_scale)
     return linear + angular
+
+
+def map_single_axis_velocity(frame: InputFrame, joint_index=1, speed_scale=.20,
+                             deadzone=.08, joint_max=1.50, response_exponent=1.5):
+    """Return rad/s for exactly one selected joint; other input axes are unused."""
+    ControlSelection._validate('single_axis', joint_index)
+    ControlSelection._validate_speed(speed_scale)
+    axes = _finite_axes(frame.axes)
+    if not math.isfinite(joint_max) or joint_max <= 0:
+        raise ValueError('关节速度上限必须为有限正数')
+    velocity = [0.] * 6
+    velocity[joint_index - 1] = -shape_axis(axes[1], deadzone, response_exponent) * joint_max * speed_scale
+    return tuple(velocity)
+
+
+def input_is_neutral(frame, deadzone=.08, allow_navigation=False):
+    """Navigation permits left/right D-pad only, never motion or LB/B/Y."""
+    return (not frame.lb and not frame.b and not frame.home and
+            all(abs(v) <= deadzone for v in frame.axes) and
+            not any(frame.dpad[:2] if allow_navigation else frame.dpad))
+
+
+def home_input_neutral(frame, deadzone=.08):
+    """Home permits held LB/Y, but never B, stick motion or D-pad motion."""
+    return (not frame.b and all(abs(v) <= deadzone for v in frame.axes) and
+            not any(frame.dpad))
 
 
 class InputGate:
@@ -103,9 +209,10 @@ def validate_tool_config(data):
     ranges = {
         'control_rate_hz': (20., 200.), 'deadzone': (0., .4),
         'neutral_dwell_s': (.05, 1.), 'response_exponent': (.5, 3.),
-        'linear_speed_max': (.001, .05), 'angular_speed_max': (.001, .25),
-        'joint_speed': (.01, .30), 'joint_acceleration': (.05, .50),
+        'linear_speed_max': (.001, .30), 'angular_speed_max': (.001, 1.50),
+        'joint_speed': (.01, 1.50), 'joint_acceleration': (.05, 1.50),
         'default_speed_scale': (.05, 1.), 'dpad_scale': (0., 1.),
+        'input_filter_time_constant_s': (.01, .10),
         'input_timeout_s': (.05, .20), 'gui_timeout_s': (.10, .30),
         'command_timeout_s': (.05, .20), 'stop_settle_window_s': (.10, 1.),
         'stop_joint_span_rad': (.0001, .003), 'stop_confirm_timeout_s': (.5, 10.),
@@ -129,40 +236,42 @@ def stop_confirmed_for_generation(status, required_generation):
 
 class ControlState:
     """Small UI/controller-independent permit latch."""
-    def __init__(self):
+    def __init__(self, neutral_dwell_s=.15, deadzone=.08):
         self.state = 'WAITING'
         self.reason = '等待手柄输入'
         self.neutral_seen = False
         self.neutral_since = None
         self.lb_was_down = False
         self.session = 0
-        self.neutral_dwell_s = .15
+        self.neutral_dwell_s = neutral_dwell_s
+        self.deadzone = deadzone
 
     @staticmethod
     def neutral(frame, deadzone=.08):
-        return not frame.lb and all(abs(v) <= deadzone for v in frame.axes) and not any(frame.dpad)
+        return input_is_neutral(frame, deadzone)
 
     def start(self):
         self.session += 1
         self.state, self.reason = 'ARMED', '等待松开 LB 并回中'
         self.neutral_seen = self.lb_was_down = False
+        self.neutral_since = None
 
-    def update(self, frame, healthy=True, speed_scale=.20, now=None):
+    def update(self, frame, healthy=True, now=None):
         now = frame.received_at if now is None else now
         if frame.b or not healthy:
             self.state = 'LOCKED'
             self.reason = '停止锁定' if frame.b else '输入或反馈异常'
             self.neutral_seen = False
-            return (0.,)*6
+            return False
         if self.state not in ('ARMED', 'ACTIVE'):
-            return (0.,)*6
+            return False
         if self.state == 'ACTIVE' and not frame.lb:
             self.state, self.reason, self.lb_was_down = 'ARMED', '等待停稳确认', False
             self.neutral_since = None
             self.neutral_seen = False
-            return (0.,)*6
+            return False
         if self.state == 'ARMED' and not frame.lb:
-            if self.neutral(frame):
+            if self.neutral(frame, self.deadzone):
                 if self.neutral_since is None:
                     self.neutral_since = now
                 self.neutral_seen = now-self.neutral_since >= self.neutral_dwell_s
@@ -170,14 +279,14 @@ class ControlState:
                 self.neutral_since = None
                 self.neutral_seen = False
             self.reason = '等待按住 LB' if self.neutral_seen else '请先松开 LB 并让摇杆回中'
-            return (0.,)*6
+            return False
         if self.state == 'ARMED':
             if not self.neutral_seen:
                 self.reason = '请先松开 LB 并让摇杆回中'
-                return (0.,)*6
+                return False
             self.state, self.reason = 'ACTIVE', '控制中 · 松开 LB 停止'
             self.lb_was_down = True
-        return map_velocity(frame, speed_scale=speed_scale)
+        return True
 
     def recover(self, healthy):
         if self.state != 'LOCKED' or not healthy:
