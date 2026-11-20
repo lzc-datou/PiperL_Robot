@@ -197,6 +197,18 @@ class ServoGuardRecoveryTests(unittest.TestCase):
         self.assertEqual(state.state, 'paused')
         self.assertEqual(state.pause_cause, 'joint_bound')
 
+    def test_visual_bound_hint_uses_only_a_fresh_validated_servo_endpoint(self):
+        for age in (.03, .25):
+            state = self.guard()
+            state.state, state.visual_mode = 'running', True
+            state.config['command_timeout'] = .2
+            state.last_trajectory = 100.-age
+            state.last_visual_knot = [0., 1., -1., 2.20, .5, -1.]
+            state.on_servo(NS(code=6, message='joint bound'))
+            self.assertEqual(state.state, 'paused')
+            self.assertEqual(state.bound_reference, state.last_visual_knot if age < .2 else None)
+            self.assertFalse(state.gate.calls[-1][0].data)
+
     def test_native_pause_cause_survives_status_updates_and_stop_clears_it(self):
         state = self.guard()
         state.state = 'running'

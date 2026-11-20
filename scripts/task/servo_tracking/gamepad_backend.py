@@ -47,7 +47,6 @@ class GamepadBackend(Node):
         self.selection = ControlSelection(speed_scales={
             name: self.gp['default_speed_scale'] for name in ('single_axis', 'cartesian')})
         self.selection_observer = StopObserver(self.gp['stop_settle_window_s'], self.gp['stop_joint_span_rad'])
-        self.navigation_down = (False, False)
         self.model = RobotModel(self.get_parameter('robot_description').value)
         self.feedback = FreshJoints()
         self.input_gate = InputGate(self.gp['input_timeout_s'])
@@ -234,19 +233,17 @@ class GamepadBackend(Node):
 
     def on_input(self, msg):
         now = time.monotonic()
-        previous_navigation = self.navigation_down
+        dpad_was_released = self._fresh_input() and not any(self.input.dpad)
         try:
             frame = InputFrame(msg.guid, int(msg.generation), int(msg.sequence), now,
-                tuple(msg.axes), tuple(msg.dpad), bool(msg.lb), bool(msg.b),
+                tuple(msg.axes), tuple(int(value) for value in msg.dpad), bool(msg.lb), bool(msg.b),
                 bool(msg.connected), bool(msg.link_verified), bool(msg.mapping_verified),
                 home=bool(msg.home))
             self.input_gate.accept(frame, now=now)
             self.input, self.input_seen, self.input_error = frame, now, ''
-            self.navigation_down = (bool(frame.dpad[2]), bool(frame.dpad[3]))
             self.device_name=msg.device_name; self.connection_type=msg.connection_type; self.input_source=msg.source
         except ValueError as exc:
             self.input_error = str(exc)
-            self.navigation_down = (False, False)
             self.input = None
             self.input_seen = 0.
             if '连接已变化' in str(exc):
@@ -279,11 +276,13 @@ class GamepadBackend(Node):
                 else:
                     self.reason = '请先松开 LB/Y 并让摇杆回中，再按住 LB + Y'
             return
-        left, right = self.navigation_down
-        if (self.selection.control_mode == 'single_axis' and left != right and
-                not any(previous_navigation) and self._selection_ready(allow_navigation=True)):
-            joint = max(1, min(6, self.selection.joint_index + (1 if right else -1)))
-            self._apply_selection('single_axis', joint, allow_navigation=True)
+        if self.selection.control_mode == 'single_axis' and dpad_was_released and sum(frame.dpad) == 1:
+            up, down, left, right = frame.dpad
+            row, column = divmod(self.selection.joint_index - 1, 3)
+            row += down - up
+            column += right - left
+            if 0 <= row < 2 and 0 <= column < 3:
+                self._apply_selection('single_axis', row * 3 + column + 1, allow_navigation=True)
         if self.phase in ('ACTIVE','PREPARING'):
             if not frame.lb:
                 self._begin_stop('ARMED','已松开 LB，等待停稳确认')
@@ -502,6 +501,7 @@ class GamepadBackend(Node):
 
     def start_session(self, request, response):
         if self.phase != 'WAITING': response.success=False; response.message='当前已有会话或停止锁定'; return response
+        if not self._fresh_input(): response.success=False; response.message='等待手柄连接和有效输入'; return response
         if not self.servo_switched: response.success=False; response.message='等待 MoveIt Servo 切换至 JOINT_JOG'; return response
         if not self._healthy(): response.success=False; response.message='等待新鲜关节反馈'; return response
         self.session += 1; self.control.start(); self.phase='ARMED'

@@ -17,7 +17,7 @@ def backend(phase='ARMED'):
     state = NS(phase=phase, reason='', mode='sim', gp=load_tool_config(),
                selection=ControlSelection(), selection_observer=NS(confirmed=Mock(return_value=True), reset=Mock()),
                input=InputFrame('fixture', 1, 2, now, (0.,)*4, (0,)*4, False, False),
-               input_seen=now, input_error='', input_gate=InputGate(), navigation_down=(False, False),
+               input_seen=now, input_error='', input_gate=InputGate(),
                ui_seen=now, guard_seen=now, guard_state='idle',
                guard_status={'gate_closed': True, 'stop_confirmed': True, 'stop_generation': 3,
                              'stop_requested_at': now},
@@ -52,6 +52,16 @@ def message(sequence=3, *, axes=(0.,)*4, dpad=(0,)*4, lb=False, b=False, connect
 
 
 class GamepadBackendSelectionTests(unittest.TestCase):
+    def test_open_before_gamepad_waits_for_first_input_before_arming(self):
+        state = backend('WAITING')
+        initial = state.input
+        state.input = None
+        self.assertFalse(state.start_session(None, NS()).success)
+        self.assertEqual(state.phase, 'WAITING')
+        state.input = initial
+        self.assertTrue(state.start_session(None, NS()).success)
+        self.assertEqual(state.phase, 'ARMED')
+
     def test_selection_barrier_uses_stopped_guard_fresh_input_and_released_buttons(self):
         state = backend()
         self.assertTrue(state._selection_ready())
@@ -116,6 +126,41 @@ class GamepadBackendSelectionTests(unittest.TestCase):
             state._begin_prepare = Mock()
             state.on_input(message(dpad=(0, 0, 0, 1), lb=phase == 'ACTIVE'))
             self.assertEqual(state.selection.joint_index, 1)
+
+    def test_four_directions_follow_the_two_by_three_joint_grid(self):
+        # Each row lists the resulting joint for up, down, left and right.
+        neighbors = ((1, 4, 1, 2), (2, 5, 1, 3), (3, 6, 2, 3),
+                     (1, 4, 4, 5), (2, 5, 4, 6), (3, 6, 5, 6))
+        for joint, targets in enumerate(neighbors, 1):
+            for direction, target in enumerate(targets):
+                with self.subTest(joint=joint, direction=direction):
+                    state = backend()
+                    state.selection.select('single_axis', joint)
+                    revision = state.selection.revision
+                    dpad = [0] * 4
+                    dpad[direction] = 1
+                    for sequence in (3, 4, 5):
+                        state.on_input(message(sequence, dpad=dpad))
+                    self.assertEqual(state.selection.joint_index, target)
+                    self.assertEqual(state.selection.revision, revision + (target != joint))
+                    state._request_guard.assert_not_called()
+
+    def test_diagonal_or_blocked_press_requires_a_new_press_after_release(self):
+        for blocked in ('diagonal', 'unsettled', 'lb', 'stick', 'stale'):
+            with self.subTest(blocked=blocked):
+                state = backend('WAITING')
+                down = (0, 1, 0, 0)
+                if blocked == 'stale':
+                    state.input_seen -= 1.
+                state.selection_observer.confirmed.return_value = blocked != 'unsettled'
+                state.on_input(message(3, dpad=(0, 1, 0, 1) if blocked == 'diagonal' else down,
+                                       lb=blocked == 'lb', axes=(.5 if blocked == 'stick' else 0., 0., 0., 0.)))
+                state.selection_observer.confirmed.return_value = True
+                state.on_input(message(4, dpad=down))
+                self.assertEqual(state.selection.joint_index, 1)
+                state.on_input(message(5))
+                state.on_input(message(6, dpad=down))
+                self.assertEqual(state.selection.joint_index, 4)
 
     def test_speed_changes_only_update_current_mode_while_released_and_idle(self):
         state = backend()

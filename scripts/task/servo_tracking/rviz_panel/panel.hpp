@@ -49,6 +49,7 @@ private:
   QCheckBox *show_;
   QTimer timer_;
   QElapsedTimer received_;
+  bool visual_mode_=false;
   bool active_=false, busy_=false, point_mode_=false, plan_ready_=false, switching_mode_=false;
   double linear_speed_base_=-1., angular_speed_base_=-1.;
 };

@@ -388,8 +388,12 @@ def validate_trajectory(msg, actual, model, config, now):
             raise ValueError('Servo 轨迹时间无效')
         if point.velocities and np.any(np.abs(vector(point.velocities, 6)) > knot_limits):
             raise ValueError('关节速度越限')
-        if previous is not None and np.any(np.abs(q-previous)/(t-previous_t) > segment_limits):
-            raise ValueError('相邻轨迹点速度越限')
+        if previous is not None:
+            speeds = np.abs(q-previous)/(t-previous_t)
+            if np.any(speeds > segment_limits):
+                i = int(np.argmax(speeds/segment_limits))
+                raise ValueError(f'相邻轨迹点速度越限 J{i+1}：{speeds[i]:.3f} rad/s，'
+                                 f'允许 {segment_limits[i]:.3f} rad/s，点间隔 {(t-previous_t)*1000:.2f} ms')
         previous, previous_t = q, t
 
 

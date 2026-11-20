@@ -106,6 +106,33 @@ class CurrentCommandTrackingTests(unittest.TestCase):
         self.assertEqual(self.g.state, 'running')
         self.g.driver_output.publish.assert_called_once()
 
+    def test_visual_guard_forwards_bounded_position_knots_after_checking_velocities(self):
+        from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+        self.g.visual_mode = True
+        msg = JointTrajectory(joint_names=JOINTS)
+        msg.header.stamp.sec = 1000
+        for knot in self.trajectory.points:
+            point = JointTrajectoryPoint(positions=knot.positions, velocities=knot.velocities)
+            point.time_from_start.nanosec = knot.time_from_start.nanosec
+            msg.points.append(point)
+        self.g.on_trajectory(msg)
+        forwarded = self.g.output.publish.call_args.args[0]
+        self.assertEqual(forwarded.header, msg.header)
+        self.assertEqual(forwarded.joint_names, msg.joint_names)
+        for new, original in zip(forwarded.points, msg.points, strict=True):
+            self.assertEqual(new.positions, original.positions)
+            self.assertEqual(new.time_from_start, original.time_from_start)
+            self.assertFalse(new.velocities or new.accelerations)
+            self.assertTrue(original.velocities)
+        self.g.output.publish.reset_mock()
+        msg.points[0].velocities[0] = 10.
+        self.g.on_trajectory(msg)
+        self.assertEqual(self.g.state, 'fault')
+        hold = self.g.output.publish.call_args.args[0]
+        self.assertEqual(len(hold.points), 1)
+        np.testing.assert_allclose(hold.points[0].positions, self.actual)
+        np.testing.assert_array_equal(hold.points[0].velocities, np.zeros(6))
+
     def test_old_point_one_threshold_does_not_interrupt_tracking(self):
         self.g.on_commanded(self.commanded(.100001))
         self.assertEqual(self.g.state, 'running')

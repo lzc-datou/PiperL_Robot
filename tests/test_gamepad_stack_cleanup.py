@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -128,6 +129,29 @@ while True: time.sleep(.1)
                 run._run_stack(args, argparse.ArgumentParser())
         spawn.assert_not_called()
         handles[0].close.assert_called_once()
+
+    def test_documented_real_commands_start_waiting_for_the_selected_transport(self):
+        from PyQt5 import QtCore, QtWidgets
+        section = (ROOT/'scripts/tools/gamepad_control/REAL_MACHINE.md').read_text().split(
+            '## 3. 启动手柄实机栈')[1].split('## 4.')[0]
+        commands = [shlex.split(line) for line in section.splitlines() if line.startswith('PIPERL_ROS_DOMAIN_ID=')]
+        self.assertEqual(len(commands), 2)
+        for command, transport in zip(commands, ('usb', 'bluetooth')):
+            with self.subTest(transport=transport), \
+                    patch.object(run, 'ROOT', self.logs), patch.object(run, '_acquire', return_value=[]), \
+                    patch.object(run, '_preflight_ros'), patch.object(QtWidgets, 'QApplication'), \
+                    patch.object(QtCore, 'QTimer'), patch.object(run.EvdevInput, 'devices', return_value=([], '等待手柄')), \
+                    patch('scripts.tools.gamepad_control.app.GamepadWindow') as window, \
+                    patch.dict(sys.modules, {'scripts.tools.gamepad_control.ros_bridge': Mock()}), \
+                    patch('scripts.tools.gamepad_control.stack_supervisor.start_stack', return_value=(Mock(), Mock())) as start, \
+                    patch('scripts.tools.gamepad_control.stack_supervisor.stop_stack'), \
+                    patch.object(run, '_exec_window', return_value=0), patch.object(sys, 'argv', command[4:]):
+                self.assertEqual(run.main(), 0)
+                launch = start.call_args.args[0]
+                for argument in ('mode:=real', 'gamepad_input_source:=evdev', 'gamepad_link_verified:=true',
+                                 'gamepad_mapping_verified:=true', f'gamepad_device:={transport}'):
+                    self.assertIn(argument, launch)
+                self.assertEqual(window.call_args.kwargs['device_selector'], transport)
 
     def test_event_loop_exception_cleans_stack_even_if_bridge_cleanup_raises(self):
         from PyQt5 import QtCore, QtWidgets

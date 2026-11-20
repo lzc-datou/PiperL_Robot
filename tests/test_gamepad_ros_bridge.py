@@ -3,7 +3,8 @@ import json
 import os
 import time
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import rclpy
 from rclpy.node import Node
@@ -12,9 +13,32 @@ from std_msgs.msg import String
 from piper_servo_tracking.msg import GamepadInput
 
 from scripts.tools.gamepad_control.ros_bridge import GamepadBridge
+from scripts.tools.gamepad_control.ros_input import InputNode
 
 
 class GamepadRosBridgeTests(unittest.TestCase):
+    def test_reconnect_immediately_publishes_new_generation_and_clears_held_input(self):
+        old = dict(guid='wireless', generation=1, sequence=12500, connected=True, source='evdev',
+                   link_verified=False, mapping_verified=False, axes=(.8, 0., 0., 0.), dpad=(0,)*4,
+                   lb=True, b=False, home=True,
+                   device=dict(name='Xbox Wireless Controller', path='/dev/input/event18', connection='蓝牙'))
+        new = dict(old, generation=3, sequence=1, lb=False, home=False, axes=(0.,)*4)
+        node = SimpleNamespace(source='evdev', adapter=Mock(error='断开'), last_identity=None,
+                               last_published_sequence=0, last_evdev_frame=None,
+                               get_logger=Mock(), get_clock=Mock(), pub=Mock())
+        from builtin_interfaces.msg import Time
+        node.get_clock.return_value.now.return_value.to_msg.return_value = Time()
+        node.publish = lambda frame: InputNode.publish(node, frame)
+        node.adapter.latest.side_effect = [old, old, None, None, new]
+        for _ in range(5):
+            InputNode.tick(node)
+        sent = [call.args[0] for call in node.pub.publish.call_args_list]
+        self.assertEqual([(m.connected, m.generation, m.sequence) for m in sent],
+                         [(True, 1, 12500), (False, 1, 12501), (True, 3, 1)])
+        self.assertEqual(sent[2].connection_type, '蓝牙')
+        self.assertFalse(sent[1].lb or sent[1].home or any(sent[1].axes))
+        self.assertFalse(sent[2].mapping_verified or sent[2].link_verified)
+
     def test_spin_drains_multiple_callbacks_without_an_unbounded_loop(self):
         with patch('scripts.tools.gamepad_control.ros_bridge.time.monotonic', return_value=1.), \
                 patch('scripts.tools.gamepad_control.ros_bridge.rclpy.spin_once') as spin:

@@ -29,6 +29,8 @@ class InputNode(Node):
         self.generation, self.sequence = 1, 0
         self.last_identity = None
         self.last_published_sequence = 0
+        self.last_evdev_frame = None
+        self.reported_input_error = ''
         self.fixture_override = None
         self.fixture_received = 0.
         if self.source == 'fixture':
@@ -84,13 +86,26 @@ class InputNode(Node):
             return
         snapshot = self.adapter.latest() if self.adapter else None
         if snapshot:
+            self.reported_input_error = ''
             identity = (snapshot['guid'], snapshot['generation'])
             if identity != self.last_identity:
                 self.last_identity = identity
-                self.get_logger().info(f"发现输入设备 {snapshot['device']['name']} ({snapshot['device']['path']})")
+                self.last_published_sequence = 0
+                device = snapshot['device']
+                self.get_logger().info(f"发现{device['connection']}手柄 {device['name']} ({device['path']})")
             if snapshot['sequence'] > self.last_published_sequence:
                 self.last_published_sequence = snapshot['sequence']
+                self.last_evdev_frame = snapshot
                 self.publish(snapshot)
+        elif self.last_evdev_frame is not None:
+            self.reported_input_error = self.adapter.error or '手柄输入中断'
+            self.get_logger().warning(self.reported_input_error)
+            self.publish(dict(self.last_evdev_frame, connected=False, sequence=self.last_published_sequence + 1,
+                              axes=(0.,)*4, dpad=(0,)*4, lb=False, b=False, home=False))
+            self.last_evdev_frame = None
+        elif self.adapter and self.adapter.error and self.adapter.error != self.reported_input_error:
+            self.reported_input_error = self.adapter.error
+            self.get_logger().info(self.reported_input_error)
 
     def destroy_node(self):
         if self.adapter:

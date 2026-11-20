@@ -10,11 +10,11 @@
 bash scripts/piperl/run.sh --python-only python scripts/tools/control_panel/run.py
 ```
 
-离线查看界面可加 `--demo`。运行需要 Linux SocketCAN、iproute2、Python、PyQt5，接口激活通过系统图形授权工具 pkexec。默认窗口 900 × 720；屏幕可用区域不足时缩小。正文 22 px、按钮 26 px、标题 32 px，可调整大小。
+离线查看界面可加 `--demo`。运行需要 Linux SocketCAN、iproute2、Python、PyQt5 与 QtSvg，接口激活通过系统图形授权工具 pkexec。默认窗口 900 × 720；屏幕可用区域不足时缩小。窗口可调整大小。
 
 ## 窗口布局与离线预览
 
-端口选择和“CAN 连接”位于同一行，连接结果和完整故障信息直接显示在下方。“机械臂使能”横跨操作区，回零与重置并排放置。操作按钮至少 76 px 高，底部固定全宽阻尼急停。窄窗口或长错误信息可滚动查看主体，急停保持可见。文字、配色和控件状态使用[共享界面主题](../ui/README.md)。
+顶栏显示所选 CAN 端口、连接状态和接口速率。中部显示最近一次操作结果及“机械臂使能”。右侧使用 PiPER-L 本体模型生成的[静态线稿](../../../outputs/generated_images/control_panel/piper_l_sketch.png)，末端为裸法兰。故障信息或较窄窗口会让出图示空间以展示全文。回零与重置位于下方，红色阻尼急停固定在窗口底部。
 
 窗口只保留当前状态和操作入口。将鼠标停在端口或按钮上可看操作说明；连接、回零、重置和停止的完整含义见下文。特别是：CAN 已连接不代表机械臂已使能；回零前确认活动空间，重置前支撑机械臂，软件阻尼急停不代替物理急停。
 
@@ -24,12 +24,12 @@ bash scripts/piperl/run.sh --python-only python scripts/tools/control_panel/run.
 bash scripts/piperl/run.sh --python-only python scripts/tools/control_panel/preview.py
 ```
 
-预览使用纯静态数据，不创建真实 Backend、不枚举端口、不打开 CAN、不提交操作。它在 `outputs/ui_redesign/desktop_workstation/control_panel/after/` 保存 900 × 720 和 720 × 640 的等待连接、已连接、处理中、长错误示例。改前源码、主题和截图保存在同目录的 `baseline/`。这些截图只用于界面检查，不能作为连接、使能或动作证据。
+预览使用纯静态数据，不创建真实 Backend、不枚举端口、不打开 CAN、不提交操作。它在 `outputs/generated_images/control_panel/after/` 保存 900 × 720 和 720 × 640 的等待连接、已连接、处理中、长错误示例。这些截图只用于界面检查，不能作为连接、使能或动作证据。
 
 ## 连接与使能
 
 1. 先结束使用同一机械臂的旧运动会话和驱动，再选择实际 CAN 适配器。
-2. 选中接口未启用时，点击“CAN 连接”并完成系统授权。已启用、1 Mbps 且正常的接口会自动接入，不必重复连接。
+2. 选中接口未启用时，点击“连接”并完成系统授权。已启用、1 Mbps 且正常的接口会自动接入，不必重复连接。
 3. 确认安装、支撑、活动空间和停止手段后，点击“机械臂使能”，等待“CAN 运动模式和六轴使能已确认”。
 4. 再启动手柄或规划任务。官方驱动启动时读取使能状态，外部使能不保证刷新已运行驱动的缓存。
 
@@ -41,7 +41,7 @@ bash scripts/piperl/run.sh --python-only python scripts/tools/control_panel/prev
 
 | 按钮 | 行为 |
 | --- | --- |
-| CAN 连接 | 按需启用选中接口、打开 socket，不发送机械臂运动指令 |
+| 连接 | 按需启用选中接口、打开 socket，不发送机械臂运动指令 |
 | 机械臂使能 | 恢复 CAN/普通 MOVE J 模式，等待控制器正常与六轴使能反馈 |
 | 机械臂回零 | 确认使能与模式后，发送六轴零角度目标；默认控制器速度比例 10% |
 | 重置 | 复位急停，留出约 1 秒处理窗口；不附带使能或回零 |

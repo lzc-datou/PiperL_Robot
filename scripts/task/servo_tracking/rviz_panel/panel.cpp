@@ -233,14 +233,14 @@ void Panel::sendMode(bool point_mode){
 }
 void Panel::updateControls(bool fresh){
   actions_->setCurrentIndex(point_mode_ ? 1 : 0);
-  flow_hint_->setText(point_mode_ ? "设置三维目标，先规划，再执行。" : "拖动三维目标，验证后点击开启跟踪。");
+  flow_hint_->setText(visual_mode_ ? "点击开启跟踪，棋盘进入画面后自动跟随。" : point_mode_ ? "设置三维目标，先规划，再执行。" : "拖动三维目标，验证后点击开启跟踪。");
   const bool available=fresh && !active_ && !busy_ && !switching_mode_;
   start_->setEnabled(available && !point_mode_);
   plan_->setEnabled(available && point_mode_);
   execute_->setEnabled(available && point_mode_ && plan_ready_);
-  control_->setEnabled(fresh && !switching_mode_);
+  control_->setEnabled(fresh && !visual_mode_ && !switching_mode_);
   reset_->setEnabled(fresh);stop_->setEnabled(fresh);
-  home_->setEnabled(fresh && !busy_ && !switching_mode_);
+  home_->setEnabled(fresh && !visual_mode_ && !busy_ && !switching_mode_);
 }
 void Panel::setState(const QString &summary,const QString &detail){
   const auto compact=compactState(summary);
@@ -268,12 +268,13 @@ void Panel::updateSpeedLimits(double scale){
 void Panel::receive(const std::string &json){
   const auto object=QJsonDocument::fromJson(QByteArray::fromStdString(json)).object();
   if(object.isEmpty())return;
+  visual_mode_=object.contains("visual_branch");
   received_.restart();active_=object["active"].toBool();busy_=object["busy"].toBool();
   point_mode_=object["control_mode"].toString()=="point";plan_ready_=object["plan_ready"].toBool();
   {const QSignalBlocker blocker(control_);control_->setCurrentIndex(point_mode_ ? 1 : 0);}
   updateControls(true);
   // A constant button label avoids changing size hints when tracking starts.
-  mode_->setText((object["mode"].toString()=="real" ? "实机 · " : "纯仿真 · ")+QString(point_mode_ ? "单点运动" : "六轴伺服"));
+  mode_->setText((object["mode"].toString()=="real" ? "实机 · " : "纯仿真 · ")+QString(visual_mode_ ? "棋盘视觉伺服" : point_mode_ ? "单点运动" : "六轴伺服"));
   execute_->setToolTip("执行已检查的单点计划；修改目标或速度后需要重新规划");
   const auto state_text=object["state"].toString();
   const auto feedback_error=object["feedback_error"].toString();
@@ -283,9 +284,18 @@ void Panel::receive(const std::string &json){
     if(joint.startsWith("joint"))joint="J"+joint.mid(5);
     if(!joint.isEmpty())bound_axes.append(joint);
   }
+  QString vision_detail;
+  if(visual_mode_){
+    const auto center=object["tcp_center_m"].toArray();
+    if(center.size()==3)
+      vision_detail=QString("\nTCP 横向偏移 X %1 mm，Y %2 mm | 图像年龄 %3 ms")
+        .arg(center[0].toDouble()*1000.,0,'f',1).arg(center[1].toDouble()*1000.,0,'f',1)
+        .arg(object["age_s"].toDouble()*1000.,0,'f',0);
+    vision_detail+="\nGuard "+object["guard_state"].toString()+"  "+object["input_detail"].toString();
+  }
   setState(!object["feedback_accepted"].toBool() && !bound_axes.isEmpty()
     ? "反馈超限 "+bound_axes.join(" / ") : state_text,
-    state_text+(feedback_error.isEmpty() ? QString() : "\n"+feedback_error));
+    state_text+vision_detail+(feedback_error.isEmpty() ? QString() : "\n"+feedback_error));
   const auto reach_text=object["reachability"].toString();
   reach_->setText("目标："+(reach_text.contains("关节角超出模型限位") ? QString("反馈超限") : reach_text));
   reach_->setToolTip(reach_text);

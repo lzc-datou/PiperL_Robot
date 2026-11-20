@@ -188,6 +188,20 @@ class CartesianController:
         self._motion_valid = False
         self.settling_braking = False
 
+    def pause_updates(self):
+        """Keep the integral but exclude time with no authorized tracking update."""
+        self._last_now = self._previous_error = None
+
+    def reset_angular_reference(self, orientation):
+        """Retire the prior tilt reference without discarding translation control."""
+        for state in (self._integral, self._derivative, self._last_output, self._target_velocity):
+            state[3:] = 0.
+        if self._previous_error is not None:
+            self._previous_error[3:] = 0.
+            self._previous_rotation_error = Rotation.identity()
+        if self._target_pose is not None:
+            self._target_pose[3:] = orientation
+
     @property
     def measured_velocity(self):
         return self._measured_velocity.copy() if self._motion_valid else None

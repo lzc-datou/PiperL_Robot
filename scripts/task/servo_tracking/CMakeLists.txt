@@ -8,7 +8,7 @@ find_package(ament_cmake_python REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "srv/PlanJointTarget.srv" "srv/JointPlanCommand.srv" "srv/SelectGamepadControl.srv" "msg/GamepadInput.msg"
+  "srv/VisionMotion.srv" "srv/PlanJointTarget.srv" "srv/JointPlanCommand.srv" "srv/SelectGamepadControl.srv" "msg/GamepadInput.msg"
   DEPENDENCIES std_msgs)
 find_package(rclcpp REQUIRED)
 find_package(rviz_common REQUIRED)

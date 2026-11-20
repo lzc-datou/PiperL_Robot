@@ -465,6 +465,11 @@ class Backend(Node):
                 raise ValueError('等待 Servo / MoveIt 就绪')
             q, actual = self.actual()
             if self.target is None:
+                if getattr(self, 'visual_mode', False) is True:
+                    self.active, self.start_pending, self.dragging = True, True, False
+                    self.reason = '跟踪已开启，等待棋盘出现'
+                    response.success, response.message = True, self.reason
+                    return response
                 raise ValueError('等待目标初始化')
             if self.aligned_revision == self.revision:
                 dp, dr = pose_error(self.target, actual)
@@ -877,7 +882,11 @@ class Backend(Node):
             try:
                 self.model.check_joints(q, self.config['joint_margin'])
             except ValueError:
-                raise ValueError('目标处于关节限位保护区')
+                detail = ''
+                if getattr(self, 'visual_mode', False) is True:
+                    from scripts.task.visual_servo.geometry import joint_boundary
+                    detail = ' ' + joint_boundary(q, self.model.lower, self.model.upper, self.config['joint_margin'])
+                raise ValueError('目标处于关节限位保护区' + detail)
             checked_target = context['target'] if context is not None else self.target
             dp, dr = pose_error(checked_target, self.model.pose(q))
             if np.linalg.norm(dp) > .003 or np.linalg.norm(dr) > .03:
@@ -972,18 +981,24 @@ class Backend(Node):
             except (ValueError, RuntimeError) as exc:
                 self.stop_tracking('目标保持失败：' + str(exc))
 
-    def publish_twist(self, values):
+    def publish_twist(self, values, *, joint_step=None):
         values = np.asarray(values, dtype=float)
         jog = getattr(self, 'jog', None)
         velocity = np.zeros(6)
         effective = np.zeros(6)
-        if jog is not None and np.any(values):
+        if jog is not None and (joint_step is not None or np.any(values)):
             try:
-                q, _ = self.actual()
-                velocity = damped_joint_velocity(q, values, self.model, self.config, self.scale)
+                if joint_step is None:
+                    q, _ = self.actual()
+                    velocity = damped_joint_velocity(q, values, self.model, self.config, self.scale)
+                else:
+                    # The visual task already validated this exact step against
+                    # the limits using feedback from the current control tick.
+                    q, velocity = joint_step
                 effective = self.model.jacobian(q) @ velocity
             except ValueError:
                 values = np.zeros(6)
+                velocity = np.zeros(6)
         # Requested Cartesian velocity remains a diagnostic. Native Servo is
         # explicitly in JOINT_JOG mode and consumes only this bounded qdot.
         msg = TwistStamped()
@@ -1063,8 +1078,7 @@ class Backend(Node):
         except Exception as exc:
             self.stop_tracking('到位保持请求失败：' + str(exc))
 
-    def tick(self):
-        self.heartbeat.publish(Float64(data=time.time()))
+    def ensure_switched(self):
         if not self.switched:
             if self.switch_future is None and self.switch.service_is_ready():
                 self.switch_future = self.switch.call_async(ServoCommandType.Request(command_type=ServoCommandType.Request.JOINT_JOG))
@@ -1074,6 +1088,12 @@ class Backend(Node):
                 except Exception:
                     pass
                 self.switch_future = None
+            return False
+        return True
+
+    def tick(self):
+        self.heartbeat.publish(Float64(data=time.time()))
+        if not Backend.ensure_switched(self):
             return
         command = np.zeros(6)
         try:
@@ -1171,6 +1191,8 @@ class Backend(Node):
         measured_velocity = getattr(self.controller, 'measured_velocity', None)
         motion_known = isinstance(measured_velocity, np.ndarray) and measured_velocity.shape == (6,)
         braking = getattr(self.controller, 'settling_braking', False)
+        extra = self.visual_status() if getattr(self, 'visual_mode', False) is True else {}
+        state = extra.pop('state', state)
         self.status.publish(String(data=json.dumps(dict(mode=self.mode, active=self.active, state=state,
             control_mode=self.control_mode, busy=self.joint_busy, plan_ready=self.plan_ready, plan_id=self.joint_id,
             reachability=self.reachability, position_error_mm=error_mm, orientation_error_deg=error_deg,
@@ -1190,7 +1212,7 @@ class Backend(Node):
             measured_tcp_linear_speed_mps=float(np.linalg.norm(measured_velocity[:3])) if motion_known else None,
             measured_tcp_angular_speed_radps=float(np.linalg.norm(measured_velocity[3:])) if motion_known else None,
             execution_feedback=getattr(getattr(self, 'execution_observer', None), 'reason', 'unavailable'),
-            singularity_condition=condition), ensure_ascii=False)))
+            singularity_condition=condition, **extra), ensure_ascii=False)))
         # Colour the actual pickable sphere; no non-interactive sphere covering it.
         # Never replace controls during a drag: that would interrupt RViz mouse capture.
         if self.target is not None and not self.dragging:
@@ -1207,9 +1229,9 @@ class Backend(Node):
                     self.marker_color = color
 
 
-def main():
+def main(backend_class=Backend):
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
-    node = Backend()
+    node = backend_class()
     exiting = False
     def request_exit(signum, frame):
         nonlocal exiting

@@ -71,10 +71,12 @@ def run():
     from tests_sampling import run as check_sampling
     from tests_feedback import run as check_feedback
     from tests_combined import run as check_combined
+    from tests_preview import run as check_preview
     check_feedback()
     check_quality()
     check_sampling()
     check_combined()
+    check_preview()
     check_chessboard()
     rng = np.random.default_rng(43)
     expected = np.eye(4)

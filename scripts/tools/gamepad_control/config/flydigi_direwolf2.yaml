@@ -1,4 +1,13 @@
 name_hint: flydigi
+bluetooth_layouts:
+  # Linux microsoft HID driver: contiguous gamepad buttons 0x130..0x139.
+  # For this firmware SDL maps physical B/Y/LB to b1/b3/b4 respectively.
+  - vendor: 0x045e
+    product: 0x02e0
+    version: 0x0903
+    gamepad_keymask: 0x03ff
+    input_report: [0x01, 16]  # report ID and length, including the ID byte
+    buttons: {lb: BTN_WEST, b: BTN_EAST, home: BTN_NORTH}
 # Linux evdev codes vary by USB/receiver firmware. These are an explicit starter
 # profile, not a claim of tested hardware indices; input mode reports actual values.
 evdev:

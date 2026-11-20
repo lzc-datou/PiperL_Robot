@@ -12,7 +12,7 @@ import time
 ROOT=Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
 from scripts.tools.gamepad_control.settings import load_tool_config, load_input_profile, TOOL_CONFIG_PATH
-from scripts.tools.gamepad_control.input_adapter import EvdevInput
+from scripts.tools.gamepad_control.input_adapter import EvdevInput, TRANSPORT_BUSES
 
 
 def _exec_window(app, window):
@@ -104,7 +104,10 @@ def _run_stack(args,parser):
     if args.input_source=='evdev':
         adapter=EvdevInput(load_input_profile())
         candidates, error=adapter.devices(args.device)
-        if not candidates: parser.error(error)
+        # A transport selector may start before the pad wakes up. The ROS
+        # input reader keeps scanning the same transport while the UI is open.
+        if not candidates and args.device and args.device not in TRANSPORT_BUSES:
+            parser.error(error)
         try: adapter._choose_device(candidates)
         except ValueError as exc: parser.error(str(exc))
     command=[sys.executable,'/opt/ros/jazzy/bin/ros2','launch','piper_servo_tracking','task.launch.py',
@@ -129,7 +132,7 @@ def _run_stack(args,parser):
         from scripts.tools.gamepad_control.ros_bridge import init_bridge
         bridge=init_bridge()
         lifetime.callback(bridge.destroy_node)
-        window=GamepadWindow(args.mode,bridge=bridge,config=gp)
+        window=GamepadWindow(args.mode,bridge=bridge,config=gp,device_selector=args.device)
         logs=ROOT/'outputs/gamepad_control'/f'{time.strftime("%Y%m%d_%H%M%S")}_{args.mode}_d{os.environ.get("ROS_DOMAIN_ID","0")}_{os.getpid()}'
         logs.mkdir(parents=True,exist_ok=True)
         logfile=lifetime.enter_context((logs/'stack.log').open('w',encoding='utf-8'))
@@ -138,8 +141,8 @@ def _run_stack(args,parser):
         monitor=QtCore.QTimer(window)
         def check_stack():
             if process.poll() is not None and not window.close_requested_at:
-                window.status.setText(f'后端启动/运行失败（退出码 {process.returncode}）；请结束控制并检查日志')
-                window.hint.setText(f'查看日志：{logs}/stack.log')
+                window.report_stack_exit(process.returncode, logs / 'stack.log')
+                monitor.stop()
         monitor.timeout.connect(check_stack); monitor.start(250)
         return _exec_window(app, window)
 
@@ -147,7 +150,7 @@ def _run_stack(args,parser):
 def main():
     parser=argparse.ArgumentParser(description='PiPER-L 手柄控制：单轴与基座坐标系笛卡尔速度点动')
     parser.add_argument('--mode',choices=('demo','input','sim','real'),default='demo')
-    parser.add_argument('--device',help='输入设备 /dev/input/eventN 或 by-id 路径；用于 input 和使用 evdev 的 sim/real')
+    parser.add_argument('--device',help='bluetooth 自动查找蓝牙手柄，usb 自动查找 USB 手柄；也可指定 /dev/input/eventN 或 by-id 路径')
     parser.add_argument('--list-devices', action='store_true', help='列出可读的兼容手柄设备并退出，不打开窗口或启动 ROS')
     parser.add_argument('--input-source',choices=('fixture','evdev'),default=None,help='sim 默认使用标记为 fixture 的虚拟中立输入')
     parser.add_argument('--rviz', action=argparse.BooleanOptionalAction, default=None,
@@ -158,12 +161,14 @@ def main():
     if args.list_devices:
         devices, error = EvdevInput(load_input_profile()).devices(args.device)
         for device in devices:
-            print(f"{device['path']}  {device['name']}  USB/输入ID {device['vendor']:04x}:{device['product']:04x}")
+            print(f"{device['path']}  {device['name']}  {device['connection']}  {device['vendor']:04x}:{device['product']:04x}")
         if error:
             print(error, file=sys.stderr)
         return 0 if devices else 1
     if args.mode in ('sim','real') and args.input_source is None:
-        args.input_source='evdev' if args.mode=='real' else 'fixture'
+        args.input_source='evdev' if args.mode=='real' or args.device else 'fixture'
+    if args.mode in ('sim', 'real') and args.device and args.input_source != 'evdev':
+        parser.error('--device 指定实体手柄，请使用 --input-source evdev')
     if args.rviz is None:
         args.rviz = args.mode == 'sim'
     if args.mode in ('demo','input'):
@@ -173,9 +178,9 @@ def main():
         app=QtWidgets.QApplication(sys.argv[:1])
         try:
             if args.mode=='input':
-                adapter=EvdevInput(load_input_profile())
+                adapter=EvdevInput(load_input_profile(), display_only=True)
                 adapter.start(args.device)
-            window=GamepadWindow(args.mode,input_adapter=adapter)
+            window=GamepadWindow(args.mode,input_adapter=adapter,device_selector=args.device)
             return _exec_window(app, window)
         finally:
             if adapter is not None:

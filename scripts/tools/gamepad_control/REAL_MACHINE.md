@@ -28,13 +28,23 @@
 
 ## 3. 启动手柄实机栈
 
-只有第 1 步确实通过，才使用两个已验证参数：
+完成第 1 步中对应连接方式的验证后，在项目根目录按连接方式任选一条命令。
+
+**USB 有线手柄**
 
 ```bash
-PIPERL_ROS_DOMAIN_ID=64 bash scripts/piperl/run.sh python scripts/tools/gamepad_control/run.py --mode real --input-source evdev --verified-link --verified-mapping --rviz
+PIPERL_ROS_DOMAIN_ID=64 bash scripts/piperl/run.sh python scripts/tools/gamepad_control/run.py --mode real --input-source evdev --device usb --verified-link --verified-mapping --rviz
 ```
 
-多个手柄时添加 `--device 实际路径`。此命令创建官方驱动、Servo、guard、手柄窗口及 RViz，不自动前往仿真初始姿态。等待新鲜真实关节反馈，核对模型与实物姿态；反馈、模式或使能状态异常时先结束控制并处理原因。
+**蓝牙手柄**
+
+```bash
+PIPERL_ROS_DOMAIN_ID=64 bash scripts/piperl/run.sh python scripts/tools/gamepad_control/run.py --mode real --input-source evdev --device bluetooth --verified-link --verified-mapping --rviz
+```
+
+蓝牙手柄首次使用时先在 Ubuntu 完成配对。窗口打开后会持续查找所选连接方式的手柄，也可以先启动程序，再唤醒手柄，等系统建立连接。使用蓝牙命令时，即使同时插着 USB 接收器，程序也只接受蓝牙输入。当前连接方式下有多只兼容手柄时，可将 `--device` 的值替换为目标设备的路径。
+
+这两条命令都会启动官方驱动、Servo、guard、手柄窗口及 RViz。等待窗口显示手柄已连接、真实关节反馈在线，并核对模型与实物姿态后，再开始控制。
 
 ## 4. 从单轴低速开始
 

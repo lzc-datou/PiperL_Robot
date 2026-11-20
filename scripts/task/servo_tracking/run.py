@@ -15,13 +15,13 @@ from scripts.task.servo_tracking.core import load_config
 from scripts.task.common.process_cleanup import stop_process_group
 
 
-def main():
+def main(argv=None, *, visual=None):
     parser = argparse.ArgumentParser(description='RViz 六轴伺服；默认纯仿真，不自动使能实机')
     parser.add_argument('--mode', choices=['sim', 'real'], default='sim')
     parser.add_argument('--config', type=Path, default=Path(__file__).parent/'config/config.yaml')
     parser.add_argument('--control-config', type=Path, help='独立笛卡尔控制参数文件')
     parser.add_argument('--no-rviz', action='store_true', help='自动化仿真验证使用；实机仍要求面板心跳')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     args.config = args.config.resolve()
     if args.control_config is not None:
         args.control_config = args.control_config.expanduser().resolve()
@@ -84,12 +84,15 @@ def main():
     signal.signal(signal.SIGTERM, request_exit)
     # Multiple isolated simulations may start within the same second.
     run_name = f'{time.strftime("%Y%m%d_%H%M%S")}_{args.mode}_d{os.environ.get("ROS_DOMAIN_ID", "0")}_{os.getpid()}'
-    logs = ROOT/'outputs/servo_tracking'/run_name
+    logs = (ROOT/'outputs/tasks/visual_servo' if visual else ROOT/'outputs/servo_tracking')/run_name
     logs.mkdir(parents=True, exist_ok=True)
     print(f'模式：{args.mode}；日志：{logs}/stack.log', flush=True)
     command = [sys.executable, '/opt/ros/jazzy/bin/ros2', 'launch', 'piper_servo_tracking', 'task.launch.py',
                f'mode:={args.mode}', f'config:={args.config}',
                f'rviz:={str(not args.no_rviz).lower()}']
+    if visual:
+        command.extend([f'{key}:={value}' for key, value in visual.items()])
+        command.append(f'visual_log_dir:={logs}')
     if args.control_config is not None:
         command.append(f'control_config:={args.control_config}')
     with (logs/'stack.log').open('w') as stream:

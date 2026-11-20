@@ -28,7 +28,7 @@ class PreviewBackend:
                           connected=connected, busy=scenario == 'busy')
         messages = {
             'normal': 'can0 未启用，请点击 CAN 连接',
-            'connected': 'CAN 运动模式和六轴使能已确认',
+            'connected': '已接入 can0',
             'busy': '正在恢复 CAN / MOVE J 模式，等待控制器正常与六轴使能反馈。请等待本次操作完成。',
             'error': ('使能确认失败：关节反馈超时。当前没有收到完整的控制器模式与六轴使能反馈，'
                       '请检查适配器、线缆和机械臂供电。确认旧控制任务已经结束，再检查现场状态；'
@@ -57,7 +57,7 @@ def main():
     parser.add_argument('--label', choices=('before', 'after'), default='after')
     parser.add_argument('--source', type=Path, help='Optional saved app.py for reproducing the baseline')
     parser.add_argument('--output-dir', type=Path,
-                        default=ROOT/'outputs/ui_redesign/desktop_workstation/control_panel')
+                        default=ROOT/'outputs/generated_images/control_panel')
     args = parser.parse_args()
     if args.source:
         spec = importlib.util.spec_from_file_location('control_panel_preview_source', args.source)

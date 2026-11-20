@@ -2,6 +2,7 @@
 """Render labeled UI samples without ROS, evdev, drivers, or control requests."""
 import os
 import argparse
+from math import radians
 from pathlib import Path
 import sys
 import time
@@ -21,6 +22,7 @@ class PreviewBridge:
         self.status = {
             'mode': 'sim', 'state': 'WAITING', 'servo_switched': True,
             'reason': '界面预览，所有数据为示例', 'device_name': '示例手柄',
+            'generation': 1, 'input_age_s': .012,
             'device': 'preview-only', 'connection_type': '示例',
             'link_verified': False, 'stop_confirmed': True, 'neutral_seen': True,
             'control_mode': 'single_axis', 'selected_joint': 1,
@@ -38,7 +40,7 @@ class PreviewBridge:
             'source': 'preview', 'device_name': '示例手柄', 'generation': 1,
             'connected': True, 'home': False,
         }
-        self.guard = {'state': 'idle', 'stop_confirmed': True, 'stop_generation': 0}
+        self.guard = {'state': 'idle', 'gate_closed': True, 'stop_confirmed': True, 'stop_generation': 0}
         self.guard_received = 0.
         self.last_reply = '仅渲染界面，没有连接设备或运行 ROS。'
 
@@ -56,7 +58,7 @@ class PreviewBridge:
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output-dir',type=Path,default=ROOT/'outputs/ui_redesign/desktop_workstation/gamepad/after')
+    parser.add_argument('--output-dir',type=Path,default=ROOT/'outputs/generated_images/gamepad_control')
     args=parser.parse_args()
     app = QtWidgets.QApplication([])
     outputs = args.output_dir
@@ -64,7 +66,7 @@ def main():
 
     def capture(window, name):
         window.timer.stop()
-        window.mode_label.setText('界面预览 · 示例数据')
+        window.mode_label.setText('○  离线预览')
         window.resize(960 if window.mode=='input' else 1280, 680 if window.mode=='input' else 736)
         window.show()
         window.refresh()
@@ -83,9 +85,15 @@ def main():
     window = GamepadWindow('sim', bridge=bridge)
     try:
         capture(window, 'ready.png')
+        bridge.status.update(state='ARMED', selected_joint=2, selection_revision=2)
         capture(window, 'single_axis.png')
         bridge.status.update(control_mode='cartesian', selection_revision=2)
+        bridge.status['feedback'].update(xyz_m=[.2486, -.0324, .3068],
+                                         rpy_rad=[radians(v) for v in (2.1, -14.3, 35.0)])
         capture(window, 'cartesian.png')
+        bridge.status.update(neutral_seen=False, selection_ready=False)
+        capture(window, 'waiting_neutral.png')
+        bridge.status.update(neutral_seen=True, selection_ready=True)
         original_feedback=dict(bridge.status['feedback'])
         bridge.status['feedback'].update(xyz_m=[-.6255,.3189,.7254],rpy_rad=[-3.,1.57,3.1])
         capture(window, 'cartesian_values.png')
@@ -93,6 +101,8 @@ def main():
         bridge.status.update(control_mode='single_axis', selected_joint=3, selection_revision=3)
         window.details_button.setChecked(True)
         capture(window, 'details.png')
+        window.diag.scrollToBottom()
+        capture(window, 'details_scrolled.png')
         window.details_button.setChecked(False)
         bridge.status.update(state='ACTIVE', joint_bound_limited=True, selection_ready=False)
         bridge.guard.update(state='running', joint_bound_limited=True)
@@ -111,7 +121,7 @@ def main():
         capture(window, 'homing.png')
         bridge.status.update(state='ARMED',control_mode='cartesian',neutral_seen=True,selection_ready=True)
         bridge.input.update(lb=False,home=False)
-        window.resize(1040, 680)
+        window.resize(720, 580)
         window.show(); window.refresh(); app.processEvents()
         window.grab().save(str(outputs/'compact.png'))
         bridge.status.update(state='LOCKED',reason='机械臂反馈中断，当前停稳状态未知。请检查反馈连接，并在停稳后恢复控制。')

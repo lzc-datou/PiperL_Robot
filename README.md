@@ -25,7 +25,7 @@ PiPER-L 机械臂控制项目，基于 AgileX 官方 ROS 2、MoveIt 2 和 pyAgxA
 | 多点连续规划与执行 | [多点任务](scripts/task/multi_point/README.md) | 实机反馈与官方执行链 |
 | 路径对比、虚拟障碍物编辑 | [避障任务](scripts/task/obstacle_avoidance/README.md) | 纯预览不连接；交互执行连接 |
 | 关节监控、范围记录、点位保存 | [监控工具](scripts/tools/monitoring/README.md) | 被动读取硬件反馈 |
-| PiPER-L 与 D405 眼在手上标定 | [手眼标定](scripts/tools/handeye_calibration/README.md) | 相机与实机采样，不自动运动 |
+| D405 检测预览与眼在手上标定 | [手眼标定，含 `preview` 统一启动](scripts/tools/handeye_calibration/README.md) | 预览只启动相机与检测；实机采样不自动运动 |
 
 同一机械臂同时只运行一套运动控制栈。不同 ROS Domain 仍共享物理 CAN。软件停止和面板阻尼急停均不代替现场物理急停。
 

@@ -138,13 +138,55 @@ def verify_sample(output, fixture, camera_frame, base_frame):
     assert len(source['robot_history']) > 50
 
 
+def check_preview_context(domain_id):
+    """Exercise the real preflight while the default Context is uninitialized."""
+    from cli import config, preview_preflight
+
+    default = rclpy.get_default_context()
+    assert not default.ok() and default.handle is None
+    cfg = {**config(), 'target': 'chessboard',
+           'camera_namespace': 'preview_context_' + uuid.uuid4().hex[:12]}
+    # This only checks DISPLAY's presence; preflight never opens a GUI or device.
+    with patch.dict(os.environ, {'ROS_DOMAIN_ID': str(domain_id), 'DISPLAY': ':context-test'}):
+        for _ in range(2):
+            preview_preflight(cfg, 'chessboard')
+            assert not default.ok() and default.handle is None
+        fixture_context = rclpy.context.Context()
+        rclpy.init(args=[], context=fixture_context)
+        fixture = None
+        try:
+            fixture = rclpy.create_node(cfg['camera_name'], namespace=cfg['camera_namespace'],
+                                        context=fixture_context)
+            try:
+                preview_preflight(cfg, 'chessboard')
+            except SystemExit as error:
+                message = str(error)
+                assert '已有相机或检测发布源' in message, message
+                assert f'/{cfg["camera_namespace"]}/{cfg["camera_name"]}' in message, message
+                assert f'ROS Domain {domain_id}' in message, message
+            else:
+                raise AssertionError('Preflight did not detect the real fixture node.')
+        finally:
+            try:
+                if fixture is not None:
+                    fixture.destroy_node()
+            finally:
+                rclpy.try_shutdown(context=fixture_context)
+        preview_preflight(cfg, 'chessboard')
+        assert not default.ok() and default.handle is None
+    print(f'PASS: real preview preflight in ROS domain {domain_id}; private Context/executor, '
+          'repeated invocation, live node conflict, cleanup and retry; default Context untouched.')
+
+
 def run():
     token = uuid.uuid4().hex[:12]
     namespace = '/handeye_synthetic_test_' + token
     camera_frame, base_frame = token + '_color_optical_frame', token + '_base'
     # Keep the project/hardware domain (43) outside the synthetic test's range.
     domain_id = 60 + int(token[:4], 16) % 36
-    with tempfile.TemporaryDirectory(prefix='handeye-ros-integration-') as temporary:
+    output_root = Path(__file__).resolve().parents[3] / 'outputs'
+    output_root.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='handeye-ros-integration-', dir=output_root) as temporary:
         output = Path(temporary)
         previous_log_dir = os.environ.get('ROS_LOG_DIR')
         os.environ['ROS_LOG_DIR'] = str(output / 'ros_logs')
@@ -156,6 +198,7 @@ def run():
         signal.signal(signal.SIGALRM, timeout)
         signal.alarm(45)
         try:
+            check_preview_context(domain_id)
             rclpy.init(args=['--ros-args', '-p', 'mode:=eye_in_hand', '-p', 'min_num:=20',
                               '-p', 'agx_arm_topic:=auto',
                               '-p', f'marker_topic:={namespace}/marker_pose',

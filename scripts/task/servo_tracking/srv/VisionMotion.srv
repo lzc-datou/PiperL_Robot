@@ -1,0 +1,5 @@
+uint64 stop_generation
+bool enable
+---
+bool success
+string message

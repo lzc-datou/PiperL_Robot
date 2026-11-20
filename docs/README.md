@@ -14,7 +14,7 @@
 | 逐点规划、预览和执行 | [多点任务](../scripts/task/multi_point/README.md) |
 | 比较路径与编辑障碍物 | [避障任务](../scripts/task/obstacle_avoidance/README.md) |
 | 查看关节、保存点位和观察范围 | [监控工具](../scripts/tools/monitoring/README.md) |
-| D405 检测与手眼标定采样 | [眼在手上标定](../scripts/tools/handeye_calibration/README.md) |
+| 一条命令启动 D405 检测预览，进行手眼标定采样 | [眼在手上标定与 `preview` 入口](../scripts/tools/handeye_calibration/README.md) |
 
 实机栈启动前先用面板连接、使能并等待确认。急停恢复时先结束旧会话和驱动，再面板重置、使能，最后重新启动控制。回零是单独的运动操作。
 

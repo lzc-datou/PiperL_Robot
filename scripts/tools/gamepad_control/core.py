@@ -155,10 +155,10 @@ def map_single_axis_velocity(frame: InputFrame, joint_index=1, speed_scale=.20,
 
 
 def input_is_neutral(frame, deadzone=.08, allow_navigation=False):
-    """Navigation permits left/right D-pad only, never motion or LB/B/Y."""
+    """Selection allows at most one D-pad direction with the sticks centered and LB/B/Y released."""
     return (not frame.lb and not frame.b and not frame.home and
             all(abs(v) <= deadzone for v in frame.axes) and
-            not any(frame.dpad[:2] if allow_navigation else frame.dpad))
+            sum(frame.dpad) <= (1 if allow_navigation else 0))
 
 
 def home_input_neutral(frame, deadzone=.08):

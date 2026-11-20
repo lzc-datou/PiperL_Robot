@@ -26,6 +26,7 @@ scripts/task/<任务名>/
 | [obstacle_avoidance](obstacle_avoidance/README.md) | 多点、多障碍物双路径规划/执行、同窗口单点控制与场景编辑 |
 | [common](common/README.md) | 点位格式、官方 MoveIt 接口、真实反馈、场景、日志和启动管理 |
 | [servo_tracking](servo_tracking/README.md) | XYZ + 姿态连续伺服、单点/恢复/回零与绿色工作空间；纯仿真/实机独立启动 |
+| [visual_servo](visual_servo/README.md) | 棋盘格定距位置跟踪（仿真、只读预览和实机入口），35 cm 定距，垂直偏差 ≤ 5° 只跟位置，超过 5° 主动纠倾，机械边界暂停并支持退回恢复 |
 
 任务使用官方轨迹执行链路，不自行发送 CAN 指令或做轨迹插值。实机任务启动前，先用 [控制面板](../tools/control_panel/README.md) 完成 CAN 连接和使能确认；任务不自动使能。手柄操作从 [工具入口](../tools/gamepad_control/README.md) 开始，专用后端位于 Servo 包中。
 

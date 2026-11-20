@@ -44,6 +44,7 @@ class Guard(Node):
         self.declare_parameter('control_config_file', '')
         self.declare_parameter('robot_description', '')
         self.declare_parameter('mode', 'sim')
+        self.visual_mode = self.declare_parameter('visual_mode', False).value
         self.declare_parameter('gamepad_mode', False)
         self.declare_parameter('gamepad_input_timeout_s', .20)
         self.declare_parameter('gamepad_gui_timeout_s', .30)
@@ -94,6 +95,7 @@ class Guard(Node):
         self.servo_code = None
         self.servo_received = 0.
         self.last_forwarded = None
+        self.last_visual_knot = self.bound_reference = None
         self.last_forwarded_time = 0.
         self.action_active = False
         self.output = self.create_publisher(JointTrajectory, 'arm_controller/joint_trajectory', 1)
@@ -119,6 +121,9 @@ class Guard(Node):
         self.hold = self.create_client(Empty, 'emergency_stop') if self.real else None
         self.pause_servo = self.create_client(SetBool, 'servo_node/pause_servo')
         self.joint = JointMotion(self)
+        if self.visual_mode:
+            from piper_servo_tracking.srv import VisionMotion
+            self.create_service(VisionMotion, 'guard/vision_motion', self.vision_motion)
         self.create_service(SetBool, 'guard/enable', self.enable)
         self.create_service(Trigger, 'guard/hold', self.hold_service)
         self.create_timer(.02, self.tick)
@@ -231,6 +236,11 @@ class Guard(Node):
             # path. Fail closed if an unexpected Cartesian mode is selected;
             # never reinterpret its halted output as an executable command.
             label = '运动学约束暂停' if msg.code == 2 else '关节边界暂停'
+            if msg.code == 6 and getattr(self, 'visual_mode', False):
+                # Latch evidence before stop() closes forwarding. The most recent
+                # validated Servo endpoint may be ahead of measured hardware.
+                self.bound_reference = (self.last_visual_knot if
+                    self.servo_received-self.last_trajectory <= self.config['command_timeout'] else None)
             self.stop(label + '：' + msg.message, paused=True,
                       pause_cause='singularity' if msg.code == 2 else 'joint_bound')
         elif self.state in ACTIVE_STATES and msg.code in (-1, 5):
@@ -325,7 +335,17 @@ class Guard(Node):
         try:
             actual = self.health()
             validate_trajectory(msg, actual, self.model, self.config, time.time())
+            if getattr(self, 'visual_mode', False):
+                # The position controller interpolates these verified Servo
+                # knots linearly. Cubic endpoint derivatives can overshoot the
+                # J2/J3 hard zero when starting from rest. Preserve Servo's
+                # original velocities for validation and execution feedback.
+                msg = JointTrajectory(header=msg.header, joint_names=msg.joint_names, points=[
+                    JointTrajectoryPoint(positions=p.positions, time_from_start=p.time_from_start)
+                    for p in msg.points])
             self.output.publish(msg)
+            if getattr(self, 'visual_mode', False):
+                self.last_visual_knot = list(msg.points[-1].positions)
             self.last_trajectory = time.monotonic()
         except ValueError as exc:
             self.stop(str(exc), fault=True)
@@ -373,7 +393,7 @@ class Guard(Node):
             raise ValueError('检测到其他轨迹控制来源')
         if self.real and self.count_publishers('control/joint_states') != 1:
             raise ValueError('检测到其他实机控制来源')
-        if self.gamepad_mode and self.count_publishers('servo_node/delta_joint_cmds') != 1:
+        if (self.gamepad_mode or getattr(self, 'visual_mode', False)) and self.count_publishers('servo_node/delta_joint_cmds') != 1:
             raise ValueError('检测到其他 Servo JointJog 输入来源')
         return q
 
@@ -428,12 +448,29 @@ class Guard(Node):
                 self.stop(str(exc), fault=True)
         return response
 
-    def enable(self, req, response):
+    def vision_motion(self, req, response):
+        if self.stop_generation != req.stop_generation:
+            response.message = '停止编号已更新'
+            return response
+        if req.enable:
+            if self.stop_has_been_requested and not self.stop_confirmed:
+                response.message = '等待实测停稳'
+                return response
+            return self.enable(SetBool.Request(data=True), response, visual_request=True)
+        if self.state != 'fault':
+            self.stop('视觉伺服请求保持', holding=True)
+            response.success = True
+        response.message = self.reason
+        return response
+
+    def enable(self, req, response, visual_request=False):
         if not req.data:
             self.stop('已停止')
             response.success, response.message = True, self.reason
             return response
         try:
+            if getattr(self, 'visual_mode', False) and not visual_request:
+                raise ValueError('当前控制源为棋盘视觉任务')
             if self.gamepad_mode and self.stop_has_been_requested and not self.stop_confirmed:
                 raise ValueError('等待新鲜实测关节反馈确认停稳')
             if self.state in PREPARING_STATES + ('running',) + JOINT_STATES:
@@ -522,6 +559,7 @@ class Guard(Node):
 
     def enter_running(self, q=None):
         q = self.preparation_health()
+        self.last_visual_knot = self.bound_reference = None
         self.state, self.reason = 'running', '跟踪已开启'
         self.last_trajectory = time.monotonic()
         # MoveIt Servo may not publish status while paused. Start its freshness
@@ -600,6 +638,8 @@ class Guard(Node):
                 raise ValueError('检测到其他轨迹控制来源')
             if self.real and self.count_publishers('control/joint_states') != 1:
                 raise ValueError('检测到其他实机控制来源')
+            if getattr(self, 'visual_mode', False) and self.count_publishers('servo_node/delta_joint_cmds') != 1:
+                raise ValueError('检测到其他视觉伺服 JointJog 输入来源')
             if self.state in JOINT_STATES:
                 self.joint.tick(q, now)
                 return
@@ -659,6 +699,10 @@ class Guard(Node):
                   'stop_requested_at': self.stop_requested_at,
                   'stop_sample_count': len(self.stop_observer.samples)}
         status.update(self.joint.status())
+        if getattr(self, 'visual_mode', False) and status['pause_cause'] == 'joint_bound':
+            status['joint_bound_reference_rad'] = self.bound_reference
+        if getattr(self, 'visual_mode', False) and self.state == 'running' and self.last_visual_knot is not None:
+            status.update(servo_reference_rad=self.last_visual_knot, reference_received=self.last_trajectory)
         self.status.publish(String(data=json.dumps(status, ensure_ascii=False)))
 
 

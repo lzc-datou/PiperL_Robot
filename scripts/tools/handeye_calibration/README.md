@@ -2,7 +2,7 @@
 
 适用情况：**D405 刚性安装在 PiPER-L 末端，相机随末端运动，标定标记固定在桌面上不动**。本工具参考 [AgileX 官方手眼标定教程](https://github.com/agilexrobotics/Agilex-College/blob/master/piper/handeye/README.md)，复用其新版 `agx_arm_calibration` 的 OpenCV `calibrateHandEye` 求解，在项目采样器中检查停稳、时间配对并保存原始输入，不引入旧版 `piper_ros` 驱动。与 MoveIt Calibration、Industrial Calibration 和 easy_handeye2 的源码对照见 [审计记录](AUDIT.md)。
 
-本目录提供 D405、棋盘格和 ArUco 检测入口、官方采样器适配与 ArUco 打印文件。工具不会使能、回零、规划或移动机械臂；姿态变化由操作者通过现有官方单点控制完成。
+本目录提供 D405、棋盘格和 ArUco 检测入口、官方采样器适配与 ArUco 打印文件。`preview` 一条命令启动相机、检测和结果窗口。工具不会使能、回零、规划或移动机械臂；姿态变化由操作者通过现有控制会话完成。
 
 ## 先区分相机标定与手眼标定
 
@@ -12,22 +12,22 @@ D405 出厂带有相机校准数据。通常先使用相机驱动发布的 `Came
 
 ## 已配置的内容
 
-| 内容               | 配置与说明                                                                                                |
-| ------------------ | --------------------------------------------------------------------------------------------------------- |
-| 系统               | 本项目 Ubuntu 24.04 / ROS 2 Jazzy / Python 3.12 环境                                                      |
-| 模式               | `eye_in_hand`                                                                                           |
-| 官方标定程序       | `handeye_calibration_ros` 的 `agx_arm_calibration`，订阅 `PoseStamped`                              |
+| 内容               | 配置与说明                                                                                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| 系统               | 本项目 Ubuntu 24.04 / ROS 2 Jazzy / Python 3.12 环境                                                                                       |
+| 模式               | `eye_in_hand`                                                                                                                            |
+| 官方标定程序       | `handeye_calibration_ros` 的 `agx_arm_calibration`，订阅 `PoseStamped`                                                               |
 | 机械臂位姿         | 默认 `auto`，在单点控制 `/feedback/tcp_pose` 和手柄控制 `/piper_servo/feedback/tcp_pose` 中选择唯一有发布者的源；单位米，四元数 xyzw |
-| 参考末端           | `tcp_link`；启动时明确使用零 TCP 偏移，固定整个采样期间的定义                                           |
-| 相机名称／命名空间 | `handeye_d405` / `handeye`                                                                            |
-| 彩色图像           | `/handeye/handeye_d405/color/image_raw`                                                                 |
-| 相机内参           | `/handeye/handeye_d405/color/camera_info`                                                               |
-| 相机坐标系         | `handeye_d405_color_optical_frame`，不是外壳 `camera_link` 或深度 optical frame                       |
-| 标定板位姿         | 棋盘格：`/handeye/chessboard/pose`；ArUco：`/aruco_single/pose`。均将板上坐标转换到彩色 optical frame |
-| 检测配置           | 原始彩色图配合同分辨率的 `CameraInfo` 和畸变参数；棋盘格要求图像与内参的时间戳相同                      |
-| 当前棋盘格         | 8 × 11 个内角点，每格配置 15 mm；采样前核对实物与实测格长                                                 |
-| 可选 ArUco         | Original ArUco，ID `582`，打印文件黑色方块名义边长 70 mm；`marker_size_m` 必须填写实测值              |
-| 采样数             | 至少 20 组，可继续采更多                                                                                  |
+| 参考末端           | `tcp_link`；启动时明确使用零 TCP 偏移，固定整个采样期间的定义                                                                            |
+| 相机名称／命名空间 | `handeye_d405` / `handeye`                                                                                                             |
+| 彩色图像           | `/handeye/handeye_d405/color/image_raw`                                                                                                  |
+| 相机内参           | `/handeye/handeye_d405/color/camera_info`                                                                                                |
+| 相机坐标系         | `handeye_d405_color_optical_frame`，不是外壳 `camera_link` 或深度 optical frame                                                        |
+| 标定板位姿         | 棋盘格：`/handeye/chessboard/pose`；ArUco：`/aruco_single/pose`。均将板上坐标转换到彩色 optical frame                                  |
+| 检测配置           | 原始彩色图配合同分辨率的 `CameraInfo` 和畸变参数；棋盘格要求图像与内参的时间戳相同                                                       |
+| 当前棋盘格         | 8 × 11 个内角点，每格配置 15 mm；采样前核对实物与实测格长                                                                                 |
+| 可选 ArUco         | Original ArUco，ID `582`，打印文件黑色方块名义边长 70 mm；`marker_size_m` 必须填写实测值                                               |
+| 采样数             | 至少 20 组，可继续采更多                                                                                                                   |
 
 本项目官方驱动发布的 TCP 位姿没有填写 `header.frame_id`，因此这里通过配置与启动参数明确约定 `base_link → tcp_link`，不凭空重写消息 frame。TCP 偏移、夹爪配置、运动学零位或相机固定位置一旦改变，应重新确认这一定义及标定是否仍有效。
 
@@ -53,13 +53,15 @@ bash scripts/tools/handeye_calibration/run.sh offline-test
 
 这两条命令不启动相机或机械臂节点。首次构建可能看到 CMake 未使用 `realsense2_DIR` 的警告，因为这个参数只供相机驱动使用；其他包的同类提示不表示构建失败。
 
+`offline-test` 包含 `tests_preview.py` 的进程管理回归测试。测试使用替代子进程检查启动、日志和退出清理，不连接相机、不打开真实预览窗口，也不验证设备图像。
+
 如需复查 ROS 消息传递，可单独运行：
 
 ```bash
 bash scripts/tools/handeye_calibration/run.sh integration-test
 ```
 
-该测试启动合成图像和机器人位姿发布器、真实棋盘格检测器与采样器，使用独立 ROS 域和随机测试话题，临时输出自动清理。它不启动设备驱动或执行机械臂运动；也不测试真实相机、CAN 延迟或硬件精度。
+该测试先在默认 Context 未初始化时，真实调用 `preview` 的启动检查，验证私有 Context 与执行器匹配、连续调用、同名节点冲突和清理后重试。随后启动合成图像和机器人位姿发布器、真实棋盘格检测器与采样器，使用独立 ROS 域和随机测试话题。临时输出位于 `outputs/` 并自动清理。它不启动设备驱动、不打开图像窗口，也不执行机械臂运动；不测试真实相机、CAN 延迟或硬件精度。
 
 ## 2. 选择标定板并填写尺寸
 
@@ -75,7 +77,7 @@ chessboard:
 
 `columns` 是一行的**内角点数**，`rows` 是一列的**内角点数**，不数外边界，也不数黑白格数量。当前 8 × 11 个内角点对应 9 × 12 格。`square_size_mm` 填一格的实测边长（毫米）；可分别测横、竖连续多格的总长度，再除以格数。检查板是否平整，不能只沿用商品名称或默认 15 mm。棋盘格模式不用填写 `marker_size_m`，也不用打印 ArUco。
 
-**用 ArUco。** 把 `target` 改为 `aruco`，保留现有字典和 ID 设置，按下面的方法填写尺寸。切换模式或改尺寸后，重启 `marker`、`view` 和 `calibrate`，新开一轮采样，不混用两种标定板的数据。
+**用 ArUco。** 把 `target` 改为 `aruco`，保留现有字典和 ID 设置，按下面的方法填写尺寸。切换模式或改尺寸后，重启 `preview` 和 `calibrate`，新开一轮采样，不混用两种标定板的数据。使用分开启动的调试方式时，重启 `marker`、`view` 和 `calibrate`。
 
 打开 [A4 打印文件](assets/original_582_A4.svg)，按 **A4、100%／实际大小**打印，关闭“适应页面”。PNG 仅用于预览，优先打印带物理尺寸的 SVG。
 
@@ -95,32 +97,41 @@ marker_size_m: null  # 用实测边长（米）替换 null；不要原样保留
 
 先关闭 RealSense Viewer 及其他占用同一相机的程序。相机支架应刚性固定，线缆留有运动余量。把选定的板平整固定在桌面、保持照明均匀。棋盘格先从约 30–40 cm 试拍，以所有角点和板边留白完整入镜为准；ArUco 可从约 20–30 cm 试拍，确保整圈黑框和白边可见。
 
-**终端 1：启动相机。**
+在一个终端启动相机、检测和结果窗口：
 
 ```bash
 cd /home/lzc/ROS2_Workspace/PiperL_Robot
+bash scripts/tools/handeye_calibration/run.sh preview
+```
+
+`preview` 按 `target` 选择棋盘格或 ArUco 检测，并自动打开对应结果话题。三个程序继承同一次加载的项目环境与 ROS Domain。相机启动期间，检测器和窗口等待图像；暂未发现标记时保持运行，等待识别。
+
+按 `Ctrl+C` 或关闭结果窗口，会结束本次启动的相机、检测器和窗口。任何一个子进程退出时也会清理其余子进程。启动前会检查重复预览会话，以及当前 ROS Domain 中的同名相机或检测节点；发现冲突时停止启动，不接管已有程序。先结束之前的相机和检测会话，再运行 `preview`。
+
+终端日志分别以 `[camera]`、`[marker]`、`[view]` 为前缀。本次日志保存到 `outputs/handeye_preview/<本地时间戳>/`：`camera.log`、`marker.log`、`view.log` 记录各程序输出，`session.json` 记录启动信息，`cleanup.json` 记录退出清理。该目录只保存预览运行记录，标定采样仍保存在 `outputs/handeye/`。
+
+一键 `preview` 默认使用 640×480@30 的彩色流。需要同时查看深度时可用 `preview --with-depth`。单独启动 `camera` 时默认同时开启彩色和深度。多台 RealSense 同时连接时，可在配置中填写这台 D405 的 `camera_serial`。
+
+视觉伺服使用 `bash scripts/tools/handeye_calibration/run.sh preview --tracking`。第一次看见棋盘时，检测器用 OpenCV SB 搜索完整棋盘。连续帧用双向金字塔光流在原图上定位全部内角点，检查每个角点周围的黑白格，再用当前曝光的角点重新解算位姿。快速移板、丢点或位姿检验失败时，当帧最多做一次整板搜索。640×480 图像通常先以 ¾ 分辨率搜索，失败后在下一张图用原分辨率重试。跟踪叠图按需独立刷新，最高 10 Hz；位姿可随每帧有效观测发布。
+
+手眼标定采样使用普通 `preview`，逐帧在原分辨率搜索。已有预览时，先退出旧进程再切换。跟踪预览使用同帧 D405 元数据，将设备读出时刻与主机内核帧时钟对齐，并扣除曝光偏移。分开启动时使用 `camera --color-only --tracking`、`marker --tracking` 和 `view`。
+
+预览不会启动机械臂控制或交互采样。按后面的步骤保留或启动控制会话，再在另一个终端运行 `calibrate`。
+
+需要分别排查相机、检测器或窗口时，可在三个终端各运行一条命令。分开启动与 `preview` 选择一种，不同时使用：
+
+```bash
+# 终端 1：相机
 bash scripts/tools/handeye_calibration/run.sh camera
-```
-
-默认启用 640×480@30 的彩色和深度流；求解只用彩色图像与内参，不使用深度数值。多台 RealSense 同时连接时，先在配置中填写这台 D405 的 `camera_serial`，不要依赖设备发现顺序。
-
-**终端 2：启动检测。** `marker` 会按 `target` 启动棋盘格或 ArUco 检测。
-
-```bash
-cd /home/lzc/ROS2_Workspace/PiperL_Robot
+# 终端 2：按 target 启动检测
 bash scripts/tools/handeye_calibration/run.sh marker
-```
-
-**终端 3：观察带检测结果的图像。**
-
-```bash
-cd /home/lzc/ROS2_Workspace/PiperL_Robot
+# 终端 3：检测结果窗口
 bash scripts/tools/handeye_calibration/run.sh view
 ```
 
-`view` 会自动选择预览话题；RViz 中也可以添加 Image，棋盘格选 `/handeye/chessboard/result`，ArUco 选 `/aruco_single/result`。ArUco 节点没有结果/位姿订阅者时会跳过检测，所以先打开预览或订阅位姿。
+分开启动时，每个终端都先进入项目根目录，各程序也需分别退出。`view` 会自动选择预览话题；RViz 中也可以添加 Image，棋盘格选 `/handeye/chessboard/result`，ArUco 选 `/aruco_single/result`。ArUco 节点没有结果或位姿订阅者时会跳过检测，所以先打开预览或订阅位姿。
 
-棋盘格预览显示 `POSE OK` 时才有有效位姿。`RMS` 是角点重投影误差（像素），超过 1 px 的结果不会发布；低 RMS 本身不保证三维位姿准确。采样前确认图上的 `0` 始终对应板上的**同一个实体角点**；可在旁边白边贴一小块胶带作为目视记号，别盖住格子。当前 8 × 11 的黑白排列可区分两个相对原点，程序会统一角点顺序；若换成两方向同奇偶、旋转 180° 后图案相同的板，需要人工核对原点，发现翻转就不要采那组。
+棋盘格预览中的 `POSE OK` 表示这幅图像已产生有效位姿。`exposure age` 是从这一帧曝光到检测端制作叠图的时间，单位为毫秒。位姿保留原始曝光时间戳，视觉伺服会另行检查控制时刻的图像年龄。`RMS` 是角点重投影误差（像素），超过 1 px 的结果不会发布；低 RMS 本身不保证三维位姿准确。采样前确认图上的 `0` 始终对应板上的**同一个实体角点**；可在旁边白边贴一小块胶带作为目视记号，别盖住格子。当前 8 × 11 的黑白排列可区分两个相对原点，程序会统一角点顺序；若换成两方向同奇偶、旋转 180° 后图案相同的板，需要人工核对原点，发现翻转就不要采那组。
 
 在另一个终端检查：
 
@@ -197,16 +208,16 @@ bash scripts/tools/handeye_calibration/run.sh calibrate
 
 终端会打印本次输出目录，位于 `outputs/handeye/<时间戳>/`：
 
-| 文件                   | 内容                                                                                                     |
-| ---------------------- | -------------------------------------------------------------------------------------------------------- |
-| `session.json`       | 配置、frame 约定、所填尺寸、依赖提交版本与本工具源码 SHA256；尺寸是否实测由操作者确认 |
-| `samples.json`       | 每组 `base_T_end`、`camera_T_marker` 及机器人历史、源时间戳、frame、内参、停稳与插值记录；接受/撤销后立即保存 |
-| `images/`            | 每组对应的无损彩色 PNG 原图，用于离线复算角点及检查模糊、遮挡与原点 |
-| `sampling_error.txt` | 订阅或采样异常时保存真实异常堆栈，终端也会显示具体原因，避免只看到官方程序的通用退出提示 |
-| `input_diagnostics.json` | 采样超时时保存实际订阅话题、ROS 域、四路消息数量、最新源时间戳与年龄，区分未收到机器人消息和消息过期 |
-| `*_calibration.json` | 官方程序输出：position（米）、orientation（xyzw）、rpy（弧度）                                           |
-| `T_end_camera.json`  | 相同结果的 4×4 齐次矩阵，方便后续使用                                                                   |
-| `consistency.json`   | 旋转激励指标，以及本轮采样反算固定标记的平移 RMS/最大散布（mm）和旋转最大散布（度） |
+| 文件                       | 内容                                                                                                              |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `session.json`           | 配置、frame 约定、所填尺寸、依赖提交版本与本工具源码 SHA256；尺寸是否实测由操作者确认                             |
+| `samples.json`           | 每组 `base_T_end`、`camera_T_marker` 及机器人历史、源时间戳、frame、内参、停稳与插值记录；接受/撤销后立即保存 |
+| `images/`                | 每组对应的无损彩色 PNG 原图，用于离线复算角点及检查模糊、遮挡与原点                                               |
+| `sampling_error.txt`     | 订阅或采样异常时保存真实异常堆栈，终端也会显示具体原因，避免只看到官方程序的通用退出提示                          |
+| `input_diagnostics.json` | 采样超时时保存实际订阅话题、ROS 域、四路消息数量、最新源时间戳与年龄，区分未收到机器人消息和消息过期              |
+| `*_calibration.json`     | 官方程序输出：position（米）、orientation（xyzw）、rpy（弧度）                                                    |
+| `T_end_camera.json`      | 相同结果的 4×4 齐次矩阵，方便后续使用                                                                            |
+| `consistency.json`       | 旋转激励指标，以及本轮采样反算固定标记的平移 RMS/最大散布（mm）和旋转最大散布（度）                               |
 
 本配置得到的是 **`tcp_link_T_handeye_d405_color_optical_frame`**：将彩色相机光学坐标系中的点转换到 TCP 坐标系。
 
@@ -267,7 +278,7 @@ bash scripts/piperl/run.sh python scripts/tools/handeye_calibration/combined.py 
 
 ## 文件与版本记录
 
-`run.sh` 是操作入口，`session.sh` 只为本工具加载独立依赖；`prepare.py` 准备源码与构建；`cli.py` 组织命令；`chessboard.py` 使用 [OpenCV 角点检测与 PnP](https://docs.opencv.org/4.6.0/d9/d0c/group__calib3d.html)估计板的位姿，图像处理使用现有 Jazzy 的 `cv_bridge` 和 `message_filters`；`collector.py` 复用官方求解，管理交互采样与原始记录；`feedback.py` 选择已有控制会话的 TCP 话题；`quality.py` 检查停稳、时间插值与旋转激励；`board.py` 生成 ArUco 标记；`offline_test.py`、`tests_feedback.py`、`tests_quality.py`、`tests_sampling.py` 检查话题选择、几何和采样回归，`integration_test.py` 验证隔离测试话题中的真实 ROS 消息链路。第三方源码和许可证保留在 `.deps/handeye_ws/src/`，不复制进机械臂官方子模块。
+`run.sh` 是操作入口，`session.sh` 只为本工具加载独立依赖；`prepare.py` 准备源码与构建；`cli.py` 组织命令，并管理 `preview` 的子进程与日志，不另设 `preview.py`；`chessboard.py` 使用 [OpenCV 角点检测与 PnP](https://docs.opencv.org/4.6.0/d9/d0c/group__calib3d.html)估计板的位姿，图像处理使用现有 Jazzy 的 `cv_bridge` 和 `message_filters`；`collector.py` 复用官方求解，管理交互采样与原始记录；`feedback.py` 选择已有控制会话的 TCP 话题；`quality.py` 检查停稳、时间插值与旋转激励；`board.py` 生成 ArUco 标记；`offline_test.py`、`tests_feedback.py`、`tests_quality.py`、`tests_sampling.py` 检查话题选择、几何和采样回归，`tests_preview.py` 检查预览子进程的启动与清理，`integration_test.py` 验证隔离测试话题中的真实 ROS 消息链路。第三方源码和许可证保留在 `.deps/handeye_ws/src/`，不复制进机械臂官方子模块。
 
 | 上游                                                                                                                                     | 固定版本                                                       |
 | ---------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |

@@ -3,6 +3,14 @@ piperl_ws/build/
 piperl_ws/install/
 piperl_ws/log/
 outputs/
+# The CAN window ships this approved model drawing; other outputs are local.
+!/outputs/
+/outputs/*
+!/outputs/generated_images/
+/outputs/generated_images/*
+!/outputs/generated_images/control_panel/
+/outputs/generated_images/control_panel/*
+!/outputs/generated_images/control_panel/piper_l_sketch.png
 __pycache__/
 *.pyc
 

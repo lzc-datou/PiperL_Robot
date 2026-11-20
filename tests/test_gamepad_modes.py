@@ -53,12 +53,12 @@ class GamepadModeMappingTests(unittest.TestCase):
 
     def test_navigation_neutral_requires_released_lb_b_and_centered_sticks(self):
         self.assertTrue(input_is_neutral(frame()))
-        for dpad in ((0, 0, 1, 0), (0, 0, 0, 1)):
+        for dpad in ((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1)):
             with self.subTest(dpad=dpad):
                 self.assertFalse(input_is_neutral(frame(dpad=dpad)))
                 self.assertTrue(input_is_neutral(frame(dpad=dpad), allow_navigation=True))
         for value in (frame(lb=True), frame(b=True), frame(axes=(0., .081, 0., 0.)),
-                      frame(dpad=(1, 0, 0, 0)), frame(dpad=(0, 1, 0, 0))):
+                      frame(dpad=(1, 0, 1, 0)), frame(dpad=(0, 0, 1, 1))):
             with self.subTest(value=value):
                 self.assertFalse(input_is_neutral(value, allow_navigation=True))
                 self.assertFalse(ControlState.neutral(value))

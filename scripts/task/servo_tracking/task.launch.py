@@ -31,6 +31,30 @@ def build(context):
     input_device = LaunchConfiguration('gamepad_device', default='').perform(context)
     gamepad_link_verified = LaunchConfiguration('gamepad_link_verified', default='false').perform(context) == 'true'
     gamepad_mapping_verified = LaunchConfiguration('gamepad_mapping_verified', default='false').perform(context) == 'true'
+    vision = LaunchConfiguration('visual_config', default='').perform(context)
+    vision_params = {}
+    if vision:
+        import numpy as np
+        from scripts.task.visual_servo.geometry import settings, calibration
+        if gamepad_mode:
+            raise ValueError('视觉跟踪与手柄不能同时占用执行栈')
+        visual = settings(vision)
+        directory = LaunchConfiguration('handeye_dir', default='').perform(context)
+        calibration(visual, directory, mode == 'sim')
+        if np.any(config['tcp_offset']):
+            raise ValueError('视觉任务要求与标定一致的零 TCP 偏移')
+        logs = Path(LaunchConfiguration('visual_log_dir').perform(context)).resolve()
+        logs.mkdir(parents=True, exist_ok=True)
+        control = dict(config['control'])
+        control['linear_speed'] = min(control['linear_speed'], visual['linear_speed_mps'])
+        control['angular_speed'] = min(control['angular_speed'], float(np.deg2rad(visual['angular_speed_deg_s'])))
+        for key, limit in (('linear_acceleration', visual['linear_acceleration_mps2']),
+                           ('angular_acceleration', float(np.deg2rad(visual['angular_acceleration_deg_s2'])))):
+            control[key] = limit if control[key] is None else min(control[key], limit)
+        control_path = logs/'control.yaml'
+        control_path.write_text(yaml.safe_dump(control))
+        config = load_config(config_file, control_path)
+        vision_params = dict(visual_config=vision, visual_log_dir=str(logs), handeye_dir=directory)
     if gamepad_mode:
         if not gamepad_config:
             gamepad_config = str(Path(os.environ.get('PIPERL_ROOT',''))/'scripts/tools/gamepad_control/config/config.yaml')
@@ -63,7 +87,8 @@ def build(context):
               .robot_description_semantic(file_path='config/agx_arm.srdf.xacro', mappings={'arm_type': 'piper_l', 'effector_type': 'none'})
               .robot_description_kinematics(file_path='config/kinematics.yaml')
               .joint_limits(file_path='config/joint_limits.yaml')
-              .planning_pipelines(pipelines=['ompl'])
+              .planning_pipelines(default_planning_pipeline='ompl',
+                                  pipelines=['ompl'])
               .trajectory_execution(file_path='config/moveit_controllers_none.yaml')
               .to_moveit_configs())
     for name, limit in zip(JOINTS, joint_speed_limits(config)):
@@ -144,9 +169,22 @@ def build(context):
                 'link_verified': gamepad_link_verified,
                 'mapping_verified': gamepad_mapping_verified}])
     else:
-        for executable in ('servo_guard', 'servo_backend'):
-            node('piper_servo_tracking', executable, executable, [moveit.robot_description,
-                 {'config_file': config_file, 'control_config_file': control_file, 'mode': mode}])
+        common = {'config_file': config_file, 'control_config_file': control_file, 'mode': mode}
+        node('piper_servo_tracking', 'servo_guard', 'servo_guard',
+             [moveit.robot_description, dict(common, visual_mode=bool(vision))])
+        if vision:
+            node(None, sys.executable, 'servo_backend', [moveit.robot_description, common, vision_params],
+                 arguments=['-m', 'scripts.task.visual_servo.backend'])
+            if mode == 'sim':
+                source = LaunchConfiguration('sim_input').perform(context)
+                node(None, sys.executable, 'sim_board', [moveit.robot_description, {
+                    'visual_config': vision, 'sim_input': source}],
+                    arguments=['-m', 'scripts.task.visual_servo.scene'])
+                if source == 'image':
+                    node(None, sys.executable, 'sim_board_detector', [{'visual_config': vision}],
+                         arguments=['-m', 'scripts.task.visual_servo.scene', 'detect', vision])
+        else:
+            node('piper_servo_tracking', 'servo_backend', 'servo_backend', [moveit.robot_description, common])
     if mode == 'real':
         node('agx_arm_ctrl', 'agx_arm_ctrl_single', 'agx_arm_ctrl_single_node', [{
             'can_port': config['can_port'], 'arm_type': 'piper_l', 'effector_type': 'none',
@@ -155,8 +193,17 @@ def build(context):
         }])
     if LaunchConfiguration('rviz').perform(context) == 'true':
         rviz_config = 'gamepad.rviz' if gamepad_mode else 'servo.rviz'
+        rviz_path = Path(get_package_share_directory('piper_servo_tracking'))/'config'/rviz_config
+        if vision:
+            display = yaml.safe_load(rviz_path.read_text())
+            displays = display['Visualization Manager']['Displays'][0]['Displays']
+            displays[:] = [d for d in displays if not d['Class'].endswith('/InteractiveMarkers')]
+            displays.append({'Class': 'rviz_default_plugins/MarkerArray', 'Name': 'TCP +Z / Board normal',
+                             'Value': True, 'Topic': {'Value': '/piper_servo/vision/markers'}})
+            rviz_path = logs/'visual.rviz'
+            rviz_path.write_text(yaml.safe_dump(display, allow_unicode=True))
         node('rviz2', 'rviz2', 'servo_rviz', model_parameters,
-             arguments=['-d', str(Path(get_package_share_directory('piper_servo_tracking'))/'config'/rviz_config)])
+             arguments=['-d', str(rviz_path)])
     # A dead critical node/closed RViz ends the owned stack. run.py requests a stop before teardown.
     # Keep watchdog/driver alive for failure detection and hold before launch tears down peers.
     handlers = [RegisterEventHandler(OnProcessExit(target_action=n, on_exit=[TimerAction(
@@ -177,6 +224,10 @@ def generate_launch_description():
         DeclareLaunchArgument('rviz', default_value='true', choices=['true', 'false']),
         DeclareLaunchArgument('config', default_value=str(share/'config/config.yaml')),
         DeclareLaunchArgument('control_config', default_value=''),
+        DeclareLaunchArgument('visual_config', default_value=''),
+        DeclareLaunchArgument('visual_log_dir', default_value=str(ros_home.parent/'tasks/visual_servo')),
+        DeclareLaunchArgument('handeye_dir', default_value=''),
+        DeclareLaunchArgument('sim_input', default_value='pose', choices=['pose', 'image']),
         DeclareLaunchArgument('gamepad', default_value='false', choices=['true','false']),
         DeclareLaunchArgument('gamepad_config', default_value=''),
         DeclareLaunchArgument('gamepad_input_source', default_value='fixture', choices=['evdev','fixture','external']),

@@ -41,6 +41,25 @@ def validate_plan_math(trajectory, actual, goal, model, config, scale):
     return validate_joint_plan(trajectory, actual, goal, model, config, scale)
 
 
+def joint_plan_request(start, goal, planning_time, velocity_scale, acceleration_scale):
+    request = GetMotionPlan.Request()
+    motion = request.motion_plan_request
+    motion.group_name, motion.pipeline_id = 'arm', 'ompl'
+    motion.start_state.joint_state.name = JOINTS
+    motion.start_state.joint_state.position = start.tolist()
+    motion.start_state.is_diff = False
+    constraints = Constraints()
+    constraints.joint_constraints = [JointConstraint(
+        joint_name=name, position=float(value), tolerance_above=1e-4,
+        tolerance_below=1e-4, weight=1.) for name, value in zip(JOINTS, goal)]
+    motion.goal_constraints = [constraints]
+    motion.max_velocity_scaling_factor = velocity_scale
+    motion.max_acceleration_scaling_factor = acceleration_scale
+    motion.allowed_planning_time = planning_time
+    motion.num_planning_attempts = 3
+    return request
+
+
 class JointMotion:
     def __init__(self, guard):
         from piper_servo_tracking.srv import PlanJointTarget, JointPlanCommand
@@ -48,8 +67,9 @@ class JointMotion:
         self.planner = guard.create_client(GetMotionPlan, 'plan_kinematic_path')
         self.controller = ActionClient(guard, FollowJointTrajectory,
                                        'arm_controller/follow_joint_trajectory')
-        guard.create_service(PlanJointTarget, 'guard/plan_joint_target', self.plan)
-        guard.create_service(JointPlanCommand, 'guard/joint_plan_command', self.command)
+        if not getattr(guard, 'visual_mode', False):
+            guard.create_service(PlanJointTarget, 'guard/plan_joint_target', self.plan)
+            guard.create_service(JointPlanCommand, 'guard/joint_plan_command', self.command)
         self.plan_id, self.purpose = '', ''
         self.target_revision = 0
         self.ready = False
@@ -241,26 +261,14 @@ class JointMotion:
         remaining = self.plan_deadline-time.monotonic()
         if remaining <= 0:
             raise ValueError('关节路径规划和检查累计超时')
-        request = GetMotionPlan.Request()
-        motion = request.motion_plan_request
-        motion.group_name, motion.pipeline_id = 'arm', 'ompl'
-        motion.start_state.joint_state.name = JOINTS
-        motion.start_state.joint_state.position = self.start_q.tolist()
-        motion.start_state.is_diff = False
-        constraints = Constraints()
-        constraints.joint_constraints = [JointConstraint(
-            joint_name=name, position=float(value), tolerance_above=1e-4,
-            tolerance_below=1e-4, weight=1.) for name, value in zip(JOINTS, self.goal_q)]
-        motion.goal_constraints = [constraints]
         # Leave headroom for JTC quintic extrema between MoveIt/TOTG knots.
         # Validation still uses the operator's full cap; do not alter the plan.
-        motion.max_velocity_scaling_factor = self.scale * self.planning_headroom
         # TOTG can leave a very short final segment whose JTC acceleration peaks
         # near three times its supplied knot acceleration. Reserve that margin
         # in the official planner, while retaining the strict operator cap below.
-        motion.max_acceleration_scaling_factor = self.scale * self.acceleration_headroom
-        motion.allowed_planning_time = min(float(g.config.get('planning_time', 5.)), remaining)
-        motion.num_planning_attempts = 3
+        request = joint_plan_request(self.start_q, self.goal_q,
+            min(float(g.config.get('planning_time', 5.)), remaining),
+            self.scale * self.planning_headroom, self.scale * self.acceleration_headroom)
         self.phase('joint_planning', 'MoveIt 正在规划关节路径' if not self.replans else
                    '重新规划更平缓路径')
         self.pending_plan = self.planner.call_async(request)
