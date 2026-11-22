@@ -1,10 +1,10 @@
-"""Two gamepad modes and velocity-intent history; pure offline mathematics."""
+"""Gamepad modes and velocity-intent history; pure offline mathematics."""
 import math
 import unittest
 
 from scripts.tools.gamepad_control.core import (
     ControlSelection, ControlState, InputFrame, VelocityIntentFilter,
-    input_is_neutral, map_single_axis_velocity, map_velocity,
+    input_is_neutral, map_cartesian_axis_velocity, map_single_axis_velocity, map_velocity,
 )
 
 
@@ -18,7 +18,8 @@ class GamepadModeMappingTests(unittest.TestCase):
         self.assertEqual(first.control_mode, 'single_axis')
         self.assertEqual(first.joint_index, 1)
         self.assertEqual(first.revision, 0)
-        self.assertEqual(first.speed_scales, {'single_axis': .20, 'cartesian': .20})
+        self.assertEqual(first.cartesian_axis_index, 1)
+        self.assertEqual(first.speed_scales, {'single_axis': .20, 'cartesian': .20, 'cartesian_axis': .20})
         first.speed_scales['single_axis'] = .35
         self.assertEqual(first.speed_scales['cartesian'], .20)
         self.assertEqual(second.speed_scales['single_axis'], .20)
@@ -37,11 +38,23 @@ class GamepadModeMappingTests(unittest.TestCase):
         self.assertEqual(selection.revision, 2)
         self.assertEqual(selection.speed_scale, .35)
         self.assertEqual(selection.speed_scales['cartesian'], .5)
+        self.assertTrue(selection.select('cartesian_axis', 5))
+        self.assertEqual(selection.speed_scale, .20)
+        selection.set_speed(.15)
+        self.assertEqual(selection.joint_index, 6)
+        self.assertEqual(selection.axis_index, 5)
+        self.assertFalse(selection.select('cartesian_axis', 5))
+        selection.select('single_axis', selection.joint_index)
+        self.assertEqual(selection.axis_index, 6)
+        selection.select('cartesian_axis', selection.cartesian_axis_index)
+        self.assertEqual(selection.axis_index, 5)
+        self.assertEqual(selection.speed_scale, .15)
 
     def test_invalid_selection_cannot_mutate_or_unlock_anything(self):
         selection = ControlSelection()
         for mode, joint in (('joint', 1), ('', 1), ('single_axis', 0), ('cartesian', 7),
-                            ('single_axis', True), ('single_axis', 1.5)):
+                            ('single_axis', True), ('single_axis', 1.5), ('cartesian_axis', 0),
+                            ('cartesian_axis', 7)):
             with self.subTest(mode=mode, joint=joint), self.assertRaises((TypeError, ValueError)):
                 selection.select(mode, joint)
             self.assertEqual((selection.control_mode, selection.joint_index, selection.revision),
@@ -123,6 +136,19 @@ class GamepadModeMappingTests(unittest.TestCase):
                 result = map_velocity(frame(axes=axes, dpad=dpad))
                 for index, value in enumerate(result):
                     self.assertAlmostEqual(value, sign*limit if index == axis else 0.)
+
+    def test_cartesian_single_axis_maps_both_directions_and_ignores_other_controls(self):
+        for axis in range(1, 7):
+            for sign in (-1., 1.):
+                with self.subTest(axis=axis, sign=sign):
+                    active = frame(axes=(.7, -sign, -.6, .5), dpad=(0, 1, 1, 0))
+                    actual = map_cartesian_axis_velocity(active, axis, speed_scale=.4)
+                    expected = [0.]*6
+                    expected[axis-1] = sign * (.12 if axis <= 3 else .60)
+                    for value, target in zip(actual, expected):
+                        self.assertAlmostEqual(value, target)
+            centered = frame(axes=(1., .08, -1., 1.), dpad=(0, 1, 0, 0), lb=True)
+            self.assertEqual(map_cartesian_axis_velocity(centered, axis), (0.,)*6)
 
     def test_new_permit_discards_a_previous_neutral_dwell(self):
         state = ControlState()

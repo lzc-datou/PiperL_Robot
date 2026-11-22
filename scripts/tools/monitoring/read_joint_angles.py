@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Passively display Piper-L joint positions and raw motor speeds.
+"""Passively display PiPER-L joint positions, raw motor speeds, and TCP pose.
 
-Receive SocketCAN feedback with optional read-only MoveIt FK.
+Receive SocketCAN feedback and compute TCP pose locally by default.
 Never initialize an SDK driver or send control commands.
 """
 import argparse
@@ -133,7 +133,7 @@ class MonitorDisplay:
                 columns, height = 80, 24
             lines = text.splitlines()
             required_columns = max(map(len, lines), default=0)+1
-            required_height = len(lines)+1
+            required_height = len(lines)
             if columns < required_columns or height < required_height:
                 # Do not wrap rows or silently hide status columns on small screens.
                 lines = [f'Need {required_columns}x{required_height}; resize terminal.']
@@ -150,7 +150,7 @@ class MonitorDisplay:
 
 def monitor(channel, *, hz=10.0, stale_after=0.5, seconds=None,
             socket_factory=None, clock=None, output=None, record_dir=None,
-            points=True, frame="base_link", tcp="tcp_link", snapshot_dir=None):
+            points=True, frame="base_link", tcp="tcp_link", snapshot_dir=None, fk_source="local"):
     """Loop over received frames; injectable transport/clock support offline tests."""
     interactive_points = points and socket_factory is None and clock is None and output is None
     panel = None
@@ -166,13 +166,13 @@ def monitor(channel, *, hz=10.0, stale_after=0.5, seconds=None,
     try:
         filters = b"".join(struct.pack("=II", identifier, FILTER_MASK) for identifier in POSITION_IDS+SPEED_IDS)
         transport.setsockopt(socket.SOL_CAN_RAW, socket.CAN_RAW_FILTER, filters)
+        if interactive_points:
+            from scripts.tools.monitoring.point_panel import PointPanel
+            panel = PointPanel(ROOT, frame, tcp, snapshot_dir, fk_source)
         transport.bind((channel,))
         if record_dir is not None:
             from scripts.tools.monitoring.joint_range_recorder import JointRangeRecorder
             recorder = JointRangeRecorder(record_dir, channel)
-        if interactive_points:
-            from scripts.tools.monitoring.point_panel import PointPanel
-            panel = PointPanel(ROOT, frame, tcp, snapshot_dir)
         display.start()
         started = clock.monotonic()
         deadline = None if seconds is None else started + seconds
@@ -241,6 +241,8 @@ def main(argv=None):
     parser.add_argument("--record-dir", type=Path,
                         help="Create a new directory and continuously save observed ranges in JSON/CSV")
     parser.add_argument("--no-points", action="store_true", help="Only show the original joint table")
+    parser.add_argument("--fk-source", choices=("local", "moveit"), default="local",
+                        help="Local FK (default) or the running MoveIt model via /compute_fk")
     parser.add_argument("--frame", default="base_link", help="FK reference frame")
     parser.add_argument("--tcp", default="tcp_link", help="FK end-effector link")
     parser.add_argument("--snapshot-dir", type=Path, help="Point snapshot output root (default: outputs/points)")
@@ -253,6 +255,7 @@ def main(argv=None):
             parser.error("--can differs from baseline.json; edit the shared configuration instead")
         options = {} if args.record_dir is None else {"record_dir": args.record_dir}
         if args.no_points: options["points"] = False
+        if args.fk_source != "local": options["fk_source"] = args.fk_source
         if args.frame != "base_link": options["frame"] = args.frame
         if args.tcp != "tcp_link": options["tcp"] = args.tcp
         if args.snapshot_dir is not None: options["snapshot_dir"] = args.snapshot_dir

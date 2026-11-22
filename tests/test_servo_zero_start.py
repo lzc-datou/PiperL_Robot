@@ -111,6 +111,49 @@ class ServoZeroStartTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, '关节角超出模型限位'):
                     self.g.model.check_joints(raw)
 
+    def test_visual_servo_and_controller_start_from_legal_zero_edge_references(self):
+        g = self.g
+        g.visual_mode = True
+        g.servo_joint_states = Mock()
+        raw = np.deg2rad([0., -.038, .015, 0., 0., 0.])
+        msg = self.message(raw)
+        msg.velocity = [0., -.02, .02, .01, 0., 0.]
+        msg.effort = [0., .3, .2, 0., 0., 0.]
+        g.on_feedback(msg)
+        sample = g.servo_joint_states.publish.call_args.args[0]
+        self.assertEqual(sample.header.stamp.sec, 1000)
+        np.testing.assert_array_equal(sample.position, np.zeros(6))
+        np.testing.assert_array_equal(sample.velocity, [0., 0., 0., .01, 0., 0.])
+        np.testing.assert_array_equal(sample.effort, msg.effort)
+        np.testing.assert_array_equal(g.health(), raw)
+
+        g.controller_hold(g.health())
+        hold = g.output.publish.call_args.args[0].points[0]
+        np.testing.assert_array_equal(hold.positions, np.zeros(6))
+        self.assertFalse(hold.velocities)
+        g.state = 'running'
+        g.on_commanded(self.message(hold.positions))
+        self.assertEqual(g.state, 'running')
+        np.testing.assert_array_equal(g.driver_output.publish.call_args.args[0].position, np.zeros(6))
+        self.now.return_value += .01
+        self.wall.return_value += .01
+        inward = np.deg2rad([0., .04, -.01, 0., 0., 0.])
+        g.on_commanded(self.message(inward))
+        np.testing.assert_array_equal(g.driver_output.publish.call_args.args[0].position, inward)
+
+    def test_visual_reference_does_not_publish_a_faulted_feedback_sample(self):
+        g = self.g
+        g.visual_mode = True
+        g.servo_joint_states = Mock()
+        for j2, j4 in ((-.101, 0.), (0., 127.001)):
+            self.wall.return_value += .01
+            raw = np.deg2rad([0., j2, 0., j4, 0., 0.])
+            self.measured(raw)
+            np.testing.assert_array_equal(g.feedback.q, raw)
+            with self.assertRaisesRegex(ValueError, '模型限位'):
+                g.health()
+        g.servo_joint_states.publish.assert_not_called()
+
     def test_simulation_feedback_keeps_strict_model_bounds(self):
         self.g.real = False
         self.measured(LOG_Q[1])

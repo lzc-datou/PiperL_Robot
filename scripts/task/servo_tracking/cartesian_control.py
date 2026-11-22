@@ -370,7 +370,7 @@ class CartesianController:
                      _cap(output[3:], config['angular_speed']*scale)]
 
     def update(self, target_pose7, actual_pose7, now, target_time, speed_scale,
-               feedforward_active=True, execution_feedback=None, actual_time=None):
+               feedforward_active=True, execution_feedback=None, actual_time=None, *, linear_feedforward=None):
         """Compute a twist with optional source-timed release braking.
 
         feedforward_active=False immediately clears the velocity estimate while
@@ -385,6 +385,10 @@ class CartesianController:
         scale = _number(speed_scale, 'speed_scale')
         if not isinstance(feedforward_active, (bool, np.bool_)):
             raise ValueError('feedforward_active must be a boolean')
+        if linear_feedforward is not None:
+            linear_feedforward = np.asarray(linear_feedforward, dtype=float)
+            if linear_feedforward.shape != (3,) or not np.isfinite(linear_feedforward).all():
+                raise ValueError('linear_feedforward must have three finite components')
         if scale > 1. or target_time > now+1e-9:
             raise ValueError('speed_scale must be <= 1 and target_time must not be in the future')
         if self._last_now is not None and now <= self._last_now:
@@ -440,6 +444,8 @@ class CartesianController:
             base += kd*self._derivative
         if algorithm.startswith('feedforward_'):
             base += feedforward
+        if linear_feedforward is not None:
+            base[:3] += linear_feedforward
         if not feedforward_active and self._motion_valid:
             # On release, use actual motion to brake before the measured pose
             # crosses the target: Kp*(error - T*measured_velocity). Unlike a
@@ -449,6 +455,10 @@ class CartesianController:
                     (slice(0, 3), 'settling_linear_prediction_time', 'position_tolerance', 'hold_linear_velocity_tolerance'),
                     (slice(3, 6), 'settling_angular_prediction_time', 'orientation_tolerance', 'hold_angular_velocity_tolerance')):
                 velocity = self._measured_velocity[block]
+                if block.start == 0 and linear_feedforward is not None:
+                    # Brake relative to the moving board. On reversal the old
+                    # direction needs damping even while feedforward is active.
+                    velocity = velocity-linear_feedforward
                 speed = float(np.linalg.norm(velocity))
                 horizon = config[name]
                 if not horizon or speed <= config[velocity_tolerance]:

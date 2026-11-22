@@ -5,7 +5,7 @@ PiPER-L 机械臂控制项目，基于 AgileX 官方 ROS 2、MoveIt 2 和 pyAgxA
 ## 用手柄控制机械臂
 
 1. 首次使用或换电脑，完成 [环境准备](docs/环境准备.md)。
-2. 按 [手柄连接与仿真指南](scripts/tools/gamepad_control/README.md) 启动虚拟机械臂。在同一窗口选择“单轴控制”或“笛卡尔控制”，确认方向、LB/B、模式切换和断线停止。
+2. 启动虚拟机械臂。在同一手柄窗口检查“单轴控制”“笛卡尔控制”和“笛卡尔单轴”的方向、LB/B、模式切换和断线停止。见 [手柄连接与仿真指南](scripts/tools/gamepad_control/README.md)。
 3. 结束旧控制程序，使用 [CAN 控制面板](scripts/tools/control_panel/README.md) 连接 CAN，点击“机械臂使能”，等待反馈确认。
 4. 再按 [首次实机操作](scripts/tools/gamepad_control/REAL_MACHINE.md) 启动手柄控制。从低速单轴开始，核对实物运动与停止，再使用笛卡尔控制。
 

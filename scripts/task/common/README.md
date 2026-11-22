@@ -6,7 +6,8 @@
 
 | 文件 | 功能 |
 | --- | --- |
-| schema.py | 配置、点位、障碍物校验；与监控快照共享格式 |
+| schema.py | 校验任务和监控快照，将米制位置和 RPY 或四元数归一为 MoveIt 目标 |
+| pose.py | 固定轴 RPY 与四元数互转、笛卡尔位置和姿态误差 |
 | joint_bounds.py | 从当前 URDF 读取六轴位置限位并验证关节值 |
 | ros_context.py | ROS 生命周期、服务请求和正运动学；无 SDK/CAN 初始化 |
 | robot_feedback.py | 真实反馈新鲜度、ROS 诊断等级/使能和位置稳定性判断 |

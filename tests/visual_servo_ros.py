@@ -12,6 +12,7 @@ import numpy as np
 import rclpy
 from geometry_msgs.msg import Pose
 from moveit_msgs.msg import ServoStatus
+from piper_servo_tracking.srv import VisionMotion
 from rclpy.node import Node
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import JointState
@@ -41,6 +42,7 @@ class Probe(Node):
         self.visible = self.create_publisher(Bool, ns+'sim/visible', 1)
         self.start = self.create_client(Trigger, ns+'start')
         self.stop = self.create_client(Trigger, ns+'stop')
+        self.vision_motion = self.create_client(VisionMotion, ns+'guard/vision_motion')
         self.recording = None
         self.motion_started = None
         self.goal = None
@@ -105,6 +107,12 @@ class Probe(Node):
         self.wait(lambda: self.guard.get('stop_confirmed') and self.status.get('boundary', '').startswith('Servo'),
                   4, '边界停稳且会话保留')
         generation, held = self.guard['stop_generation'], self.q.copy()
+        self.wait(self.vision_motion.service_is_ready, 2., 'Guard 视觉保持服务已连接')
+        # The older generation is what an in-flight vision hold sent before
+        # receiving the native Servo stop would carry.
+        reply = self.vision_motion.call_async(VisionMotion.Request(enable=False, stop_generation=generation-1))
+        self.wait(reply.done, 2., '并发缺板保持得到确认')
+        assert reply.result().success and self.guard['stop_generation'] == generation
         self.set_pose([.045, 0., 0.], 3, 30)
         until = time.monotonic()+.6
         self.wait(lambda: time.monotonic() >= until, 2, '继续向外时保持')
@@ -184,7 +192,9 @@ def main():
             if recording:
                 p.recording = (*recording, time.monotonic())
             p.wait(lambda: p.status.get('source_ok') and p.status.get('servo_ready')
+                   and p.status.get('view_geometry_available')
                    and p.count_subscribers('/piper_servo/arm_controller/joint_trajectory') == 1
+                   and p.count_publishers('/piper_servo/guard/trajectory_tail') == 1
                    and p.start.service_is_ready()
                    and (p.status.get('last_missing_exposure') if recording is None else p.status.get('angle_deg') is not None), 12, '相机与控制器就绪')
             p.motion_started = time.monotonic()
@@ -232,9 +242,21 @@ def main():
             p.wait(lambda: (p.status.get('angle_deg') or 180) <= 5 and p.status['active'] and
                    np.linalg.norm(model.pose(p.q)[:3]-model.pose(q0)[:3]) > .007, 10, '反馈 FK 纠偏与平移')
             results.append('tilt_and_translation')
+            wall = data['workspace_max_m'][0]
+            start_x = model.pose(p.q)[0]
+            generation = p.guard['stop_generation']
             p.set_pose(home[:3, :3].T @ [.065, 0., 0.], 3)
+            p.wait(lambda: p.status.get('nearby_motion') and p.status['active'] and
+                   p.guard['state'] == 'running' and model.pose(p.q)[0]-start_x > .008,
+                   6, '目标在工作空间外，机械臂仍先朝目标推进')
+            assert p.guard['stop_generation'] == generation and not p.status.get('boundary')
             p.wait(lambda: bool(p.status.get('boundary')) and p.guard.get('stop_confirmed') and
-                   p.guard.get('gate_closed'), 5, '边界保持与停稳')
+                   p.guard.get('gate_closed'), 8, '到达工作空间边界后保持与停稳')
+            final_x = model.pose(p.q)[0]
+            assert generation+1 == p.guard['stop_generation']
+            assert p.status['boundary'] == '工作空间 X上限' and -.001 <= wall-final_x < .004
+            measurements.update(workspace_advance_mm=(final_x-start_x)*1000.,
+                                workspace_remaining_mm=(wall-final_x)*1000.)
             held = p.q.copy()
             generation = p.guard['stop_generation']
             deadline = time.monotonic()+.5
@@ -245,6 +267,23 @@ def main():
                    p.guard['state'] == 'running' and np.max(abs(p.q-held)) > .008, 10, '退回同会话恢复')
             assert p.guard['stop_generation'] == generation
             results.append('boundary_stop_and_retreat')
+            p.wait(lambda: model.pose(p.q)[0] < wall-.02, 4, '恢复测试起点留有工作空间余量')
+            p.show = False
+            p.wait(lambda: p.guard.get('stop_confirmed') and p.status.get('waiting_for_target'),
+                   10, '缺板后等待棋盘重现')
+            start_x = model.pose(p.q)[0]
+            generation = p.guard['stop_generation']
+            p.set_pose(home[:3, :3].T @ [.065, 0., 0.], 3)
+            p.show = True
+            p.wait(lambda: p.status['active'] and p.status.get('nearby_motion') and
+                   p.guard['state'] == 'running' and model.pose(p.q)[0]-start_x > .008,
+                   8, '重见超出工作空间的棋盘后分段接近')
+            assert p.guard['stop_generation'] == generation
+            measurements['reacquired_approach_mm'] = (model.pose(p.q)[0]-start_x)*1000.
+            results.append('reacquire_outside_workspace')
+            p.set_pose([0., -.02, 0.], 8)
+            p.wait(lambda: model.pose(p.q)[0] < wall-.02 and p.guard['state'] == 'running',
+                   8, '回到工作空间内继续测试')
             # Move A while visible, hide during transit, compare FK to the
             # unchanged last vision revision rather than to an assumed ideal board pose.
             p.set_pose([.045, -.012, 0.], 12)
@@ -267,7 +306,9 @@ def main():
             p.wait(lambda: time.monotonic() >= until, 2, '到位停稳')
             assert np.max(abs(p.q-held)) <= .003 and p.guard['gate_closed']
             results.append('occluded_target_reached_and_held')
-            p.set_pose([.012, -.012, 0.], 12)
+            # Leave enough travel after the first feedback movement to hide
+            # the board again while the recovered target is still in flight.
+            p.set_pose([-.012, -.012, 0.], 12)
             p.show = True
             p.wait(lambda: p.status['active'] and p.guard['state'] == 'running'
                    and home[:3, 0] @ (model.pose(held)[:3]-model.pose(p.q)[:3]) > .007

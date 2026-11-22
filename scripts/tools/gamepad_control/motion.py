@@ -2,6 +2,14 @@
 import math
 
 
+def braking_speed(distance, acceleration, latency):
+    """Positive root of v*latency + v*v/(2*a) = distance."""
+    distance = max(0., distance)
+    root = math.hypot(acceleration * latency, math.sqrt(2 * acceleration * distance))
+    denominator = root + acceleration * latency
+    return 2 * acceleration * distance / denominator if denominator else 0.
+
+
 def limit_joint_velocity(q, velocity, lower, upper, acceleration, margin=.015, latency=.13):
     """Scale the whole request to leave braking distance before soft bounds.
 
@@ -23,9 +31,7 @@ def limit_joint_velocity(q, velocity, lower, upper, acceleration, margin=.015, l
             raise ValueError('关节范围不足以容纳限位余量')
         if speed == 0.:
             continue
-        distance = max(0., high - margin - position if speed > 0 else position - low - margin)
-        root = math.hypot(acceleration * latency, math.sqrt(2 * acceleration * distance))
-        denominator = root + acceleration * latency
-        allowed = 2 * acceleration * distance / denominator if denominator else 0.
+        distance = high - margin - position if speed > 0 else position - low - margin
+        allowed = braking_speed(distance, acceleration, latency)
         scale = min(scale, allowed / abs(speed))
     return tuple(v * scale for v in velocity), scale

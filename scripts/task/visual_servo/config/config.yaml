@@ -1,5 +1,5 @@
 # metres, seconds, degrees; workspace is expressed in base_link.
-distance_m: 0.35
+distance_m: 0.5
 normal_tolerance_deg: 5.0
 correction_target_deg: 4.0
 linear_speed_mps: 0.30
@@ -8,6 +8,11 @@ default_speed_scale: 0.30
 linear_acceleration_mps2: 0.20
 angular_acceleration_deg_s2: 40.0
 center_filter_s: 0.05
+feedforward_filter_s: 0.06
+feedforward_gain: 0.85
+feedforward_max_mps: 0.12
+feedforward_deadband_mps: 0.006
+feedforward_position_band_m: 0.010
 max_age_s: 0.15
 brake_window_s: 0.10
 tracking_loss_timeout_s: 1.5
@@ -15,6 +20,9 @@ max_feedback_gap_s: 0.05
 retreat_frames: 3
 stationary_position_m: 0.001
 stationary_angle_deg: 0.35
+frozen_progress_window_s: 1.5
+view_margin_px: 14.0
+view_prediction_s: 0.20
 workspace_min_m: [-0.7, -0.7, -0.2]
 workspace_max_m: [0.7, 0.7, 0.85]
 board_config: ../../../tools/handeye_calibration/config/config.yaml

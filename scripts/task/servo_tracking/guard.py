@@ -4,9 +4,11 @@ import time
 import signal
 import numpy as np
 import rclpy
+from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.signals import SignalHandlerOptions
 from rclpy.qos import QoSProfile, DurabilityPolicy
+from rclpy.time import Time
 from sensor_msgs.msg import JointState
 from diagnostic_msgs.msg import DiagnosticArray
 from std_msgs.msg import String, Float64
@@ -25,7 +27,7 @@ def stamp_seconds(stamp):
     return stamp.sec + stamp.nanosec * 1e-9
 
 
-PREPARING_STATES = ('pausing', 'syncing', 'resetting', 'opening')
+PREPARING_STATES = ('pausing', 'syncing', 'resetting', 'prepared', 'opening')
 ACTIVE_STATES = PREPARING_STATES + ('running', 'paused', 'holding') + JOINT_STATES
 
 
@@ -74,6 +76,8 @@ class Guard(Node):
         self.pause_cause = ''
         self.heartbeat = self.last_trajectory = 0.
         self.epoch = 0
+        self.visual_open_deadline = 0.
+        self.visual_open_joints = None
         self.stage_time = self.stable_since = 0.
         self.stable_q = None
         self.sync_source_stamps = None
@@ -99,6 +103,9 @@ class Guard(Node):
         self.last_forwarded_time = 0.
         self.action_active = False
         self.output = self.create_publisher(JointTrajectory, 'arm_controller/joint_trajectory', 1)
+        self.trajectory_tail = self.create_publisher(JointState, 'guard/trajectory_tail', 1) if self.visual_mode else None
+        self.servo_joint_states = (self.create_publisher(JointState, 'guard/servo_joint_states', 1)
+                                   if self.visual_mode and self.real else None)
         # Only this watchdog forwards the mock controller's result to the official driver.
         self.driver_output = self.create_publisher(JointState, 'control/joint_states', 1) if self.real else None
         self.status = self.create_publisher(String, 'guard/status', QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
@@ -274,13 +281,32 @@ class Guard(Node):
     def on_feedback(self, msg):
         previous = self.feedback.stamp
         self.feedback.update(msg.name, msg.position, stamp_seconds(msg.header.stamp))
-        if (self.stop_has_been_requested and self.feedback.stamp > previous and
-                not self.feedback.error):
-            try:
-                q = self.feedback.get(self.config['feedback_timeout'])
+        if self.feedback.stamp <= previous or self.feedback.error:
+            return
+        if not self.stop_has_been_requested and self.servo_joint_states is None:
+            return
+        try:
+            q = self.feedback.get(self.config['feedback_timeout'])
+            if self.stop_has_been_requested:
                 self.stop_observer.observe(self.feedback.stamp, time.monotonic(), q)
-            except ValueError:
-                pass
+            if self.servo_joint_states is not None:
+                reference = self.model.planning_joints(q, self.config.get('zero_feedback_tolerance', 0.))
+                # Seed Servo with a legal model state at the tolerated J2/J3
+                # zero edges. Keep raw measurements for health and stop checks.
+                sample = JointState(header=msg.header, name=JOINTS, position=reference.tolist())
+                indices = [msg.name.index(name) for name in JOINTS]
+                if len(msg.velocity) == len(msg.name) and np.isfinite(msg.velocity).all():
+                    velocity = [msg.velocity[index] for index in indices]
+                    if reference[1] == self.model.lower[1] == 0.:
+                        velocity[1] = max(0., velocity[1])
+                    if reference[2] == self.model.upper[2] == 0.:
+                        velocity[2] = min(0., velocity[2])
+                    sample.velocity = velocity
+                if len(msg.effort) == len(msg.name) and np.isfinite(msg.effort).all():
+                    sample.effort = [msg.effort[index] for index in indices]
+                self.servo_joint_states.publish(sample)
+        except ValueError:
+            pass
 
     def planning_start(self):
         raw = self.health()
@@ -346,15 +372,26 @@ class Guard(Node):
             self.output.publish(msg)
             if getattr(self, 'visual_mode', False):
                 self.last_visual_knot = list(msg.points[-1].positions)
+                if len(msg.points) >= 2:
+                    previous, tail = msg.points[-2:]
+                    dt = stamp_seconds(tail.time_from_start)-stamp_seconds(previous.time_from_start)
+                    velocity = (np.asarray(tail.positions)-np.asarray(previous.positions))/dt
+                    sample = JointState(name=JOINTS, position=tail.positions, velocity=velocity.tolist())
+                    sample.header.stamp = (Time.from_msg(msg.header.stamp)+Duration.from_msg(tail.time_from_start)).to_msg()
+                    self.trajectory_tail.publish(sample)
             self.last_trajectory = time.monotonic()
         except ValueError as exc:
             self.stop(str(exc), fault=True)
 
     def controller_hold(self, q):
+        reference = q
+        if self.real and getattr(self, 'visual_mode', False):
+            reference = self.model.planning_joints(q, self.config.get('zero_feedback_tolerance', 0.))
         msg = JointTrajectory()
         msg.joint_names = JOINTS
-        point = JointTrajectoryPoint()
-        point.positions, point.velocities = q.tolist(), [0.] * 6
+        # Use linear interpolation for a correction onto the exact zero edge.
+        point = JointTrajectoryPoint(positions=reference.tolist(),
+                                     velocities=[] if np.any(reference != q) else [0.] * 6)
         point.time_from_start.nanosec = 20_000_000
         msg.points = [point]
         # Zero header means start immediately; this command bypasses Servo only to hold/reset.
@@ -400,6 +437,8 @@ class Guard(Node):
     def stop(self, reason, fault=False, paused=False, holding=False, pause_cause=''):
         was_active = self.state in ACTIVE_STATES
         self.epoch += 1
+        self.visual_open_deadline = 0.
+        self.visual_open_joints = None
         self.state, self.reason = ('fault' if fault else 'paused' if paused else
                                    'holding' if holding else 'idle'), reason
         self.pause_cause = pause_cause if self.state == 'paused' else ''
@@ -449,18 +488,67 @@ class Guard(Node):
         return response
 
     def vision_motion(self, req, response):
+        # A visual hold can race with Servo's native joint-bound stop. Reuse
+        # the in-progress stop, including its physical stop confirmation.
+        if (not req.enable and req.stop_generation <= self.stop_generation and
+                (self.state == 'holding' or
+                 (self.state == 'paused' and self.pause_cause == 'joint_bound'))):
+            response.success, response.message = True, self.reason
+            return response
         if self.stop_generation != req.stop_generation:
             response.message = '停止编号已更新'
+            response.retry = req.enable
             return response
         if req.enable:
+            if self.state == 'fault':
+                response.message = self.reason
+                return response
+            if req.commit:
+                return self.open_visual(req, response)
+            if self.state in ('pausing', 'syncing', 'resetting', 'prepared'):
+                response.success, response.message = True, self.reason
+                return response
             if self.stop_has_been_requested and not self.stop_confirmed:
                 response.message = '等待实测停稳'
+                response.retry = True
                 return response
             return self.enable(SetBool.Request(data=True), response, visual_request=True)
         if self.state != 'fault':
             self.stop('视觉伺服请求保持', holding=True)
             response.success = True
         response.message = self.reason
+        return response
+
+    def open_visual(self, req, response):
+        if self.state != 'prepared' or not self.closed or req.preparation_epoch != self.epoch:
+            response.retry, response.message = True, '等待当前视觉准备完成'
+            return response
+        # The backend and Guard are launched on the same host. This deadline
+        # belongs to the exposure and joint step checked after synchronization.
+        now = time.monotonic()
+        if not 0. < req.valid_until-now <= self.config['command_timeout']:
+            response.retry, response.message = True, '视觉开门校验已过期'
+            return response
+        try:
+            q = self.preparation_health()
+            checked = np.asarray(req.checked_joints)
+            if checked.shape != (6,) or not np.isfinite(checked).all() or np.max(np.abs(q-checked)) > .002:
+                response.retry, response.message = True, '实测关节位置已变化，重新验证首段'
+                return response
+            if np.max(np.abs(self.commanded.get(self.config['feedback_timeout'])-q)) > .003:
+                self.stop('控制器准备后关节位置变化，重新对齐', holding=True)
+                response.retry, response.message = True, self.reason
+                return response
+            if time.monotonic() >= req.valid_until:
+                response.retry, response.message = True, '视觉开门校验已过期'
+                return response
+            self.visual_open_deadline = req.valid_until
+            self.visual_open_joints = checked.copy()
+            self.open_gate(q)
+            response.success, response.message = True, self.reason
+        except (ValueError, RuntimeError) as exc:
+            self.stop(str(exc), fault=True)
+            response.message = self.reason
         return response
 
     def enable(self, req, response, visual_request=False):
@@ -493,7 +581,7 @@ class Guard(Node):
                 raise ValueError('实机停止/控制服务不可用')
             if getattr(self, 'joint', None) is not None:
                 self.joint.invalidate()
-                self.epoch += 1
+            self.epoch += 1
             self.stop_has_been_requested = False
             self.stop_settled = self.stop_confirmed = False
             self.stop_observer.reset()
@@ -544,21 +632,37 @@ class Guard(Node):
             q = self.preparation_health()
             if np.max(np.abs(self.commanded.get(self.config['feedback_timeout'])-q)) > .003:
                 raise ValueError('Servo 重置期间关节位置变化，请重新开启跟踪')
-            if self.real:
-                if not self.closed or not self.gate.service_is_ready():
-                    raise ValueError('实机控制门未确认关闭')
-                self.state, self.reason = 'opening', '开启控制门'
-                self.stage_time = time.monotonic()
-                self.closed = False
-                opened = self.gate.call_async(SetBool.Request(data=True))
-                opened.add_done_callback(lambda f, e=self.epoch: self.opened(f, e))
+            if getattr(self, 'visual_mode', False):
+                if not self.closed:
+                    raise ValueError('视觉准备期间控制门未确认关闭')
+                self.state, self.reason = 'prepared', '已对齐，等待新鲜视觉首段验证'
+                self.publish_status()
             else:
-                self.enter_running(q)
+                self.open_gate(q)
         except ValueError as exc:
             self.stop(str(exc), fault=True)
 
+    def open_gate(self, q):
+        if self.real:
+            if not self.closed or not self.gate.service_is_ready():
+                raise ValueError('实机控制门未确认关闭')
+            self.state, self.reason = 'opening', '开启控制门'
+            self.stage_time = time.monotonic()
+            self.closed = False
+            opened = self.gate.call_async(SetBool.Request(data=True))
+            opened.add_done_callback(lambda f, e=self.epoch: self.opened(f, e))
+        else:
+            self.enter_running(q)
+
     def enter_running(self, q=None):
         q = self.preparation_health()
+        if getattr(self, 'visual_mode', False):
+            if time.monotonic() >= self.visual_open_deadline:
+                self.stop('视觉开门校验已过期', holding=True)
+                return
+            if np.max(np.abs(q-self.visual_open_joints)) > .002:
+                self.stop('视觉开门期间实测关节位置变化', holding=True)
+                return
         self.last_visual_knot = self.bound_reference = None
         self.state, self.reason = 'running', '跟踪已开启'
         self.last_trajectory = time.monotonic()
@@ -566,6 +670,8 @@ class Guard(Node):
         # lease when the session opens, then require a real status within 0.5 s.
         self.servo_received = time.monotonic()
         self.get_logger().info('跟踪已开启; ' + self.condition_snapshot(q))
+        if getattr(self, 'visual_mode', False):
+            self.publish_status()
 
     def opened(self, future, epoch):
         if epoch != self.epoch or self.state != 'opening':
@@ -643,10 +749,14 @@ class Guard(Node):
             if self.state in JOINT_STATES:
                 self.joint.tick(q, now)
                 return
-            if self.state in ('paused', 'holding'):
+            if self.state in ('paused', 'holding', 'prepared'):
                 # A valid Servo status must never restart a paused/held session.
                 return
             if self.state in PREPARING_STATES:
+                if (self.state == 'opening' and getattr(self, 'visual_mode', False) and
+                        now >= self.visual_open_deadline):
+                    self.stop('视觉开门校验已过期', holding=True)
+                    return
                 if now-self.stage_time > 3.:
                     raise ValueError('Servo 准备阶段超时：' + self.state)
                 if self.state == 'syncing':

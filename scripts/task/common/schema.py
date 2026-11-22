@@ -4,8 +4,11 @@ import math
 from pathlib import Path
 import re
 import yaml
+from .pose import orientation_error_rad, quaternion_from_rpy_deg
 
 JOINTS = [f'joint{i}' for i in range(1, 7)]
+# Covers the combined rounding of a copied monitor point (6 quaternion and 4 RPY decimals).
+ORIENTATION_ROUNDING_TOLERANCE_DEG = 0.001
 DEFAULTS = dict(frame_id='base_link', tcp_link='tcp_link', group='arm',
                 velocity_scaling=0.1, acceleration_scaling=0.1, hold_seconds=0.5,
                 return_to_initial=False, planning_time=5.0, planning_attempts=5,
@@ -17,9 +20,14 @@ DEFAULTS = dict(frame_id='base_link', tcp_link='tcp_link', group='arm',
 
 
 def number(value, label, *, minimum=None, maximum=None):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f'{label}: expected a finite number')
-    value = float(value)
+    try:
+        value = float(value)
+    except OverflowError as exc:
+        raise ValueError(f'{label}: expected a finite number') from exc
+    if not math.isfinite(value):
+        raise ValueError(f'{label}: expected a finite number')
     if minimum is not None and value < minimum or maximum is not None and value > maximum:
         raise ValueError(f'{label}: outside [{minimum}, {maximum}]')
     return value
@@ -31,11 +39,11 @@ def vector(value, count, label):
     return [number(x, label) for x in value]
 
 
-def quaternion(value):
-    q = vector(value, 4, 'orientation_xyzw')
+def quaternion(value, label='orientation_xyzw'):
+    q = vector(value, 4, label)
     norm = math.sqrt(sum(x*x for x in q))
     if abs(norm-1) > 0.01:
-        raise ValueError('orientation_xyzw must be a unit quaternion (x,y,z,w)')
+        raise ValueError(f'{label} must be a unit quaternion (x,y,z,w)')
     return [x/norm for x in q]
 
 
@@ -46,6 +54,27 @@ def mapping(value, label, allowed):
     if unknown:
         raise ValueError(f'{label}: unknown fields {sorted(unknown)}')
     return value
+
+
+def _resolve_pose_orientation(point):
+    name = point['name']
+    xyzw = None
+    if 'orientation_xyzw' in point:
+        xyzw = quaternion(point['orientation_xyzw'], f'{name}.orientation_xyzw')
+    if 'rpy' not in point:
+        if xyzw is None:
+            raise ValueError(f'{name}: pose requires orientation_xyzw or rpy')
+        return xyzw
+
+    rpy = vector(point.pop('rpy'), 3, f'{name}.rpy (deg)')
+    from_rpy = quaternion_from_rpy_deg(rpy)
+    if xyzw is None:
+        return from_rpy
+    difference = math.degrees(orientation_error_rad(xyzw, from_rpy))
+    if difference > ORIENTATION_ROUNDING_TOLERANCE_DEG:
+        raise ValueError(f'{name}: orientation_xyzw and rpy disagree by {difference:.6f} deg '
+                         f'(maximum {ORIENTATION_ROUNDING_TOLERANCE_DEG:g} deg)')
+    return xyzw
 
 
 def validate_config(document):
@@ -76,7 +105,7 @@ def validate_config(document):
     names = set()
     for point in points:
         mapping(point, 'point', ['name', 'type', 'joints_rad', 'position_m', 'orientation_xyzw',
-                                 'orientation', 'frame_id', 'hold_seconds'])
+                                 'rpy', 'frame_id', 'hold_seconds'])
         name = point.get('name')
         if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', name) or name in names:
             raise ValueError('Point names must be unique letters/digits/_/-')
@@ -85,7 +114,7 @@ def validate_config(document):
             raise ValueError('return_to_initial is reserved when automatic return is enabled')
         point['hold_seconds'] = number(point.get('hold_seconds', settings['hold_seconds']), 'hold_seconds', minimum=0)
         if point.get('type') == 'joint':
-            if set(point) & {'position_m', 'orientation_xyzw', 'orientation', 'frame_id'}:
+            if set(point) & {'position_m', 'orientation_xyzw', 'rpy', 'frame_id'}:
                 raise ValueError(f'{name}: joint point contains pose fields')
             point['joints_rad'] = vector(point.get('joints_rad'), 6, 'joints_rad (joint1..joint6)')
         elif point.get('type') == 'pose':
@@ -94,13 +123,8 @@ def validate_config(document):
             point['frame_id'] = point.get('frame_id', settings['frame_id'])
             if point['frame_id'] != settings['frame_id']:
                 raise ValueError(f'{name}: frame_id must match task frame_id')
-            point['position_m'] = vector(point.get('position_m'), 3, 'position_m')
-            if 'orientation_xyzw' in point:
-                if 'orientation' in point:
-                    raise ValueError('Choose orientation_xyzw or orientation: initial')
-                point['orientation_xyzw'] = quaternion(point['orientation_xyzw'])
-            elif point.get('orientation') != 'initial':
-                raise ValueError('Pose requires orientation_xyzw or orientation: initial')
+            point['position_m'] = vector(point.get('position_m'), 3, f'{name}.position_m (m)')
+            point['orientation_xyzw'] = _resolve_pose_orientation(point)
         else:
             raise ValueError(f'{name}: type must be joint or pose')
     capture = data.get('capture')
@@ -112,6 +136,21 @@ def validate_config(document):
         if capture.get('frame_id') != settings['frame_id'] or capture.get('tcp_link') != settings['tcp_link']:
             raise ValueError('Snapshot frame/TCP differs from task settings')
     return dict(version=1, settings=settings, points=points, **({'capture': capture} if capture else {}))
+
+
+def validate_snapshot_model(config, urdf, model_sha256):
+    """Check model identity when a whole monitoring snapshot is loaded."""
+    capture = config.get('capture', {})
+    mismatch = 'Snapshot was recorded with a different robot model/TCP; re-record or explicitly review configuration'
+    if capture.get('model_sha256') and capture['model_sha256'] != model_sha256:
+        raise RuntimeError(mismatch)
+    if capture.get('kinematics_sha256'):
+        from scripts.task.servo_tracking.core import RobotModel
+
+        settings = config['settings']
+        model = RobotModel(urdf, base=settings['frame_id'], tip=settings['tcp_link'])
+        if capture['kinematics_sha256'] != model.kinematics_sha256():
+            raise RuntimeError(mismatch)
 
 
 def read_yaml(path):

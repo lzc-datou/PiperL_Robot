@@ -42,7 +42,7 @@ min_dt: 0.001
 max_dt: 0.10
 gains:
   p: {position_gain: 2.0, orientation_gain: 2.0}
-  pi: {position_gain: 2.0, orientation_gain: 2.0, position_i_gain: 0.8, orientation_i_gain: 0.8}
+  pi: {position_gain: 1.5, orientation_gain: 2.0, position_i_gain: 0.8, orientation_i_gain: 0.8}
   pd: {position_gain: 2.0, orientation_gain: 2.0, position_d_gain: 0.08, orientation_d_gain: 0.08}
   feedforward_p: {position_gain: 4.0, orientation_gain: 4.0}
   feedforward_pd: {position_gain: 4.0, orientation_gain: 4.0, position_d_gain: 0.08, orientation_d_gain: 0.08}

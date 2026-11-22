@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime
 import math
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import yaml
+from scripts.task.common.pose import rpy_deg_from_quaternion
 from scripts.task.common.schema import JOINTS, validate_config
 
 @dataclass(frozen=True)
@@ -29,31 +31,38 @@ class Capture:
                    datetime.now().astimezone().isoformat(timespec='milliseconds'),now)
 
 
-def documents(capture,pose=None,*,frame='base_link',tcp='tcp_link',model_sha256=None,number=1):
+def documents(capture,pose=None,*,frame='base_link',tcp='tcp_link',model_sha256=None,kinematics_sha256=None,number=1):
     metadata=dict(valid_at_capture=True,captured_at=capture.captured_at,joint_names=JOINTS,
                   joint_positions_rad=list(capture.q),position_age_ms=[(capture.monotonic-t)*1000 for t in capture.received],
                   pair_skew_ms=(max(capture.received)-min(capture.received))*1000,
                   frame_id=frame,tcp_link=tcp,model_sha256=model_sha256,source='passive_socketcan')
+    if kinematics_sha256 is not None:
+        metadata['kinematics_sha256'] = kinematics_sha256
     joint=dict(name=f'point_{number:03d}_joint',type='joint',joints_rad=[round(v,8) for v in capture.q],hold_seconds=0.5)
     settings=dict(frame_id=frame,tcp_link=tcp)
     result={'joint':dict(version=1,settings=settings,capture=metadata,points=[joint])}
     if pose is not None:
         if pose['frame_id']!=frame: raise ValueError('FK frame mismatch')
-        point=dict(name=f'point_{number:03d}_pose',type='pose',frame_id=frame,
-                   position_m=[round(v,8) for v in pose['position_m']],
-                   orientation_xyzw=[round(v,8) for v in pose['orientation_xyzw']],hold_seconds=0.5)
-        result['pose']=dict(version=1,settings=deepcopy(settings),capture=deepcopy(metadata),points=[point])
+        point = dict(name=f'point_{number:03d}_pose', type='pose', hold_seconds=0.5, frame_id=frame,
+                     position_m=[round(v, 8) for v in pose['position_m']],
+                     orientation_xyzw=[round(v, 8) for v in pose['orientation_xyzw']],
+                     rpy=[round(v, 8) for v in rpy_deg_from_quaternion(pose['orientation_xyzw'])])
+        result['pose'] = dict(version=1, settings=deepcopy(settings), capture=deepcopy(metadata), points=[point])
     for document in result.values(): validate_config(document)
     return result
 
 
 def save_snapshot(directory,records):
-    # Validate everything before creating files; each capture is a new directory.
+    # Publish all representations together after writing and validating them.
     for record in records.values(): validate_config(record)
-    path=Path(directory)/datetime.now().astimezone().strftime('%Y%m%d_%H%M%S_%f')
-    path.mkdir(parents=True,exist_ok=False)
-    for kind,record in records.items():
-        (path/(kind+'.yaml')).write_text(yaml.safe_dump(record,allow_unicode=True,sort_keys=False))
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / datetime.now().astimezone().strftime('%Y%m%d_%H%M%S_%f')
+    with TemporaryDirectory(prefix='.snapshot-', dir=directory) as staging:
+        staging = Path(staging)
+        for kind, record in records.items():
+            (staging / f'{kind}.yaml').write_text(yaml.safe_dump(record, allow_unicode=True, sort_keys=False))
+        staging.rename(path)
     return path
 
 
@@ -63,6 +72,10 @@ def point_text(record):
     title=f'- {{name: {point["name"]}, type: {point["type"]}, hold_seconds: 0.5,'
     if point['type']=='joint':
         return title+'\n   joints_rad: ['+', '.join(f'{v:.6f}' for v in point['joints_rad'])+']}'
-    return (title+f' frame_id: {point["frame_id"]},\n'
-            +'   position_m: ['+', '.join(f'{v:.6f}' for v in point['position_m'])+'],\n'
-            +'   orientation_xyzw: ['+', '.join(f'{v:.6f}' for v in point['orientation_xyzw'])+']}')
+    title += f' frame_id: {point["frame_id"]},\n'
+    position = ', '.join(f'{v:.6f}' for v in point['position_m'])
+    xyzw = ', '.join(f'{v:.6f}' for v in point['orientation_xyzw'])
+    rpy = ', '.join(f'{v:.4f}' for v in point['rpy'])
+    return (title + f'   position_m: [{position}],\n'
+            f'   orientation_xyzw: [{xyzw}],\n'
+            f'   rpy: [{rpy}]' + '}')

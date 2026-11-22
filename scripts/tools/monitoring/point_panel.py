@@ -1,4 +1,4 @@
-"""Nonblocking FK and terminal snapshot keys. Never sends motion/scene commands."""
+"""Read-only FK and terminal snapshot keys."""
 from collections import deque
 import select
 import sys
@@ -6,7 +6,45 @@ import termios
 import time
 import tty
 from pathlib import Path
-from .point_snapshot import Capture,documents,save_snapshot,point_text
+from xml.etree import ElementTree as ET
+
+from .point_snapshot import Capture, documents, point_text, save_snapshot
+
+
+class LocalFK:
+    def __init__(self, root, frame, tcp):
+        from scripts.piperl.deployment import load_driver_config
+        from scripts.task.servo_tracking.core import RobotModel, load_config
+
+        driver = load_driver_config()
+        if (driver.get('arm_type'), driver.get('effector_type')) != ('piper_l', 'none'):
+            raise ValueError('local FK requires the PiPER-L flange model (piper_l, none)')
+        root = Path(root)
+        description = (root / 'piperl_ws/src/agx_arm_ros/src/agx_arm_description'
+                       / 'agx_arm_urdf/piper_l/urdf/piper_l_description.urdf')
+        task_config = root / 'scripts/task/servo_tracking/config/config.yaml'
+        offset = load_config(task_config)['tcp_offset']
+
+        # Match agx_arm.urdf.xacro for piper_l / none, using the same arm
+        # description and TCP configuration as the gamepad launch.
+        robot = ET.parse(description).getroot()
+        ET.SubElement(robot, 'link', name='tcp_link')
+        joint = ET.SubElement(robot, 'joint', name='tcp_joint', type='fixed')
+        ET.SubElement(joint, 'parent', link='link6')
+        ET.SubElement(joint, 'child', link='tcp_link')
+        ET.SubElement(joint, 'origin', xyz=' '.join(map(str, offset[:3])), rpy=' '.join(map(str, offset[3:])))
+
+        try:
+            self.model = RobotModel(ET.tostring(robot, encoding='unicode'), base=frame, tip=tcp)
+        except (KeyError, ValueError) as exc:
+            raise ValueError(f'unsupported frame/TCP for local FK ({frame} -> {tcp})') from exc
+        self.frame = frame
+        self.kinematics_sha256 = self.model.kinematics_sha256()
+
+    def pose(self, capture):
+        pose = self.model.pose(capture.q)
+        return dict(frame_id=self.frame, position_m=pose[:3].tolist(), orientation_xyzw=pose[3:].tolist())
+
 
 class ReadOnlyFK:
     def __init__(self,frame,tcp):
@@ -79,10 +117,13 @@ class ReadOnlyFK:
     def close(self): self.context.close()
 
 class PointPanel:
-    def __init__(self,root,frame='base_link',tcp='tcp_link',snapshot_dir=None):
+    def __init__(self, root, frame='base_link', tcp='tcp_link', snapshot_dir=None, fk_source='local'):
         self.frame,self.tcp=frame,tcp
         self.directory=Path(snapshot_dir or Path(root)/'outputs/points')
-        self.fk=None
+        self.local_fk = None
+        self.fk = None
+        self.fk_source = fk_source
+        self.fk_error = ''
         self.note=''
         self.latest=None
         self.frozen=None
@@ -91,10 +132,18 @@ class PointPanel:
         self.history=deque()
         self.last_stamp=None
         self.terminal=None
-        try:
-            self.fk=ReadOnlyFK(frame,tcp)
-        except Exception as exc:
-            self.note=f'Cartesian unavailable: {type(exc).__name__}; use run.sh without --python-only'
+        if fk_source == 'local':
+            try:
+                self.local_fk = LocalFK(root, frame, tcp)
+            except (ImportError, OSError, ValueError, ET.ParseError) as exc:
+                self.fk_error = f'Local FK unavailable: {exc}'
+        elif fk_source == 'moveit':
+            try:
+                self.fk = ReadOnlyFK(frame, tcp)
+            except Exception as exc:
+                self.fk_error = f'MoveIt FK unavailable ({type(exc).__name__}); use run.sh without --python-only'
+        else:
+            raise ValueError(f'Unknown FK source: {fk_source}')
         if sys.stdin.isatty():
             self.terminal=termios.tcgetattr(sys.stdin.fileno())
             tty.setcbreak(sys.stdin.fileno())
@@ -116,8 +165,9 @@ class PointPanel:
         return (len(self.history)>=3 and capture.monotonic-self.history[0].monotonic>=0.3 and
                 all(max(c.q[i] for c in self.history)-min(c.q[i] for c in self.history)<=0.003 for i in range(6)))
 
-    def records(self,capture,pose=None,model=None):
-        return documents(capture,pose,frame=self.frame,tcp=self.tcp,model_sha256=model,number=self.number)
+    def records(self, capture, pose=None, model=None, *, kinematics=None):
+        return documents(capture, pose, frame=self.frame, tcp=self.tcp, model_sha256=model,
+                         kinematics_sha256=kinematics, number=self.number)
 
     def freeze(self,records,save):
         self.frozen=records
@@ -141,16 +191,21 @@ class PointPanel:
         except ValueError as exc:
             self.latest=None
             self.history.clear()
+            self.last_stamp=None
             feedback_error=str(exc)
+        if capture and self.local_fk:
+            pose = self.local_fk.pose(capture)
+            self.latest = (capture, self.records(capture, pose, kinematics=self.local_fk.kinematics_sha256))
         if self.fk:
             self.fk.poll()
             answer=self.fk.take()
-            if answer:
+            if capture and answer:
                 sample,pose,model=answer
                 if now-min(sample.received)<=stale_after:
-                    self.latest=self.records(sample,pose,model)
+                    records=self.records(sample,pose,model)
+                    self.latest=(sample,records)
                     if self.pending_capture and sample is self.pending_capture[0]:
-                        self.freeze(self.latest,self.pending_capture[1])
+                        self.freeze(records,self.pending_capture[1])
                         self.pending_capture=None
         if self.pending_capture and now-min(self.pending_capture[0].received)>stale_after:
             self.pending_capture=None
@@ -168,23 +223,21 @@ class PointPanel:
                         self.fk.pending=None
                     if self.fk.submit(capture): self.pending_capture=(capture,'s' in pressed)
                 else:
-                    self.freeze(self.records(capture), 's' in pressed)
-        if capture and not self.pending_capture:
+                    self.freeze(self.latest[1] if self.local_fk else self.records(capture), 's' in pressed)
+        if capture and not self.pending_capture and not self.local_fk:
             if self.fk: self.fk.submit(capture)
             # Joint-only display is available even without ROS; never pair it with unrelated FK.
-            if self.latest is None or not self.fk or not self.fk.model_sha256:
-                self.latest=self.records(capture)
-        records=self.frozen or self.latest
-        if records and not self.frozen:
-            # Latest FK may be older than this CAN update; reject it if its source expired.
-            stamp=records['joint']['capture']['captured_at']
-            from datetime import datetime
-            if (datetime.now().astimezone()-datetime.fromisoformat(stamp)).total_seconds()>stale_after:
-                records=None
+            if (self.latest is None or not self.fk or not self.fk.model_sha256
+                    or now-min(self.latest[0].received)>stale_after):
+                self.latest=(capture,self.records(capture))
+        records=self.frozen
+        if not records and self.latest and now-min(self.latest[0].received)<=stale_after:
+            records=self.latest[1]
         lines=['','POINTS  p: freeze  s: save  r: live | Ctrl+C: exit']
         if records:
             meta=records['joint']['capture']
-            lines.append(('FROZEN ' if self.frozen else 'LIVE ')+meta['captured_at']+f' | {self.frame} -> {self.tcp}')
+            source = f' | FK {self.fk_source}' if 'pose' in records else ''
+            lines.append(('FROZEN ' if self.frozen else 'LIVE ')+meta['captured_at']+f' | {self.frame} -> {self.tcp}'+source)
             lines.append(point_text(records['joint']))
             if 'pose' in records:
                 lines.append(point_text(records['pose']))
@@ -194,6 +247,7 @@ class PointPanel:
         # Feedback warnings describe this render only; recovery clears them.
         if feedback_error: lines.append(feedback_error)
         elif self.note: lines.append(self.note)
+        elif self.fk_error: lines.append(self.fk_error)
         elif self.fk and self.fk.error: lines.append(self.fk.error)
         return '\n'.join(lines)
 

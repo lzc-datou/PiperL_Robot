@@ -1,5 +1,6 @@
 from PyQt5 import QtCore, QtGui, QtWidgets
 from scripts.tools.ui.theme import InstrumentSurface, LineDrawing
+from .core import CONTROL_MODE_LABELS
 
 
 class GamepadWidget(QtWidgets.QWidget):
@@ -8,15 +9,15 @@ class GamepadWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self.frame = None
         self.control_mode = None
-        self.selected_joint = 1
+        self.selected_axis = None
         self.setMinimumSize(300, 220)
 
     def set_frame(self, frame):
         self.frame = frame
         self.update()
 
-    def set_control(self, control_mode, joint_index=1):
-        self.control_mode, self.selected_joint = control_mode, joint_index
+    def set_control(self, control_mode, axis_name=None):
+        self.control_mode, self.selected_axis = control_mode, axis_name
         self.update()
 
     def paintEvent(self, event):
@@ -27,9 +28,12 @@ class GamepadWidget(QtWidgets.QWidget):
         accent = palette.color(QtGui.QPalette.Link)
         font = self.font(); font.setPixelSize(18); p.setFont(font)
         axes = self.frame['axes'] if self.frame else (0.,)*4
-        title = ('等待新鲜输入' if self.frame is None else
-                 f'单轴 J{self.selected_joint} · 原始输入' if self.control_mode == 'single_axis' else
-                 '笛卡尔 · 原始输入' if self.control_mode == 'cartesian' else '手柄原始输入')
+        mode = CONTROL_MODE_LABELS.get(self.control_mode)
+        title = '手柄原始输入'
+        if mode:
+            title = ' · '.join(filter(None, (mode, self.selected_axis, '原始输入')))
+        if self.frame is None:
+            title = '等待新鲜输入'
         p.setPen(ink)
         p.drawText(QtCore.QRect(0, 0, self.width(), 28), QtCore.Qt.AlignCenter, title)
         for index, name in enumerate(('左摇杆', '右摇杆')):
@@ -136,7 +140,8 @@ class MappingCard(InstrumentSurface):
         # Measure both legends after the window's stylesheet has reached their labels.
         self.key.setFixedHeight(self.key.sizeHint().height() + 4)
 
-    def set_mode(self, single):
+    def set_mode(self, single, axis=None):
+        self.permission.setText(f'{axis} · 按住 LB 允许运动' if axis else '按住 LB 允许运动')
         if self.single == single:
             return
         self.single = single
@@ -248,7 +253,7 @@ class DiagnosticTable(QtWidgets.QTableWidget):
         else:
             fields = ('运行环境', '设备', '连接方式', '设备标识', '连接代数', '输入来源', '输入延迟（秒）',
                       '摇杆', '方向键', 'LB / B / Y', '连接失联验证', '输入错误',
-                      '控制状态', '控制方式', '当前关节', '选择版本', '方向受限',
+                      '控制状态', '控制方式', '当前选轴', '选择版本', '方向受限',
                       'Guard 状态', '运动门关闭', '停稳确认', '回零确认进度',
                       '关节角（rad）', 'Guard 原因', '最近回复')
         super().__init__(len(fields), 2)

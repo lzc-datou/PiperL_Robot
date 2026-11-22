@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 
 from PyQt5 import QtWidgets
 from scripts.tools.gamepad_control.app import GamepadWindow
+from scripts.tools.gamepad_control.core import CONTROL_MODES
 
 
 class PreviewBridge:
@@ -25,9 +26,9 @@ class PreviewBridge:
             'generation': 1, 'input_age_s': .012,
             'device': 'preview-only', 'connection_type': '示例',
             'link_verified': False, 'stop_confirmed': True, 'neutral_seen': True,
-            'control_mode': 'single_axis', 'selected_joint': 1,
+            'control_mode': 'single_axis', 'selected_joint': 1, 'selected_cartesian_axis': 1,
             'selection_revision': 1, 'selection_ready': True,
-            'speed_scale': .20, 'speed_scales': {'single_axis': .20, 'cartesian': .20},
+            'speed_scale': .20, 'speed_scales': dict.fromkeys(CONTROL_MODES, .20),
             'dpad_scale': .35,
             'speed_limits': {'linear_m_s': .30, 'angular_rad_s': 1.50, 'joint_rad_s': 1.50},
             'joint_limits_rad': {'lower': [-2.6, 0., -2.96, -1.75, -1.22, -2.09],
@@ -91,6 +92,9 @@ def main():
         bridge.status['feedback'].update(xyz_m=[.2486, -.0324, .3068],
                                          rpy_rad=[radians(v) for v in (2.1, -14.3, 35.0)])
         capture(window, 'cartesian.png')
+        bridge.status.update(control_mode='cartesian_axis', selected_cartesian_axis=5, selection_revision=3)
+        capture(window, 'cartesian_axis.png')
+        bridge.status.update(control_mode='cartesian', selection_revision=4)
         bridge.status.update(neutral_seen=False, selection_ready=False)
         capture(window, 'waiting_neutral.png')
         bridge.status.update(neutral_seen=True, selection_ready=True)
@@ -98,7 +102,7 @@ def main():
         bridge.status['feedback'].update(xyz_m=[-.6255,.3189,.7254],rpy_rad=[-3.,1.57,3.1])
         capture(window, 'cartesian_values.png')
         bridge.status['feedback']=original_feedback
-        bridge.status.update(control_mode='single_axis', selected_joint=3, selection_revision=3)
+        bridge.status.update(control_mode='single_axis', selected_joint=3, selection_revision=5)
         window.details_button.setChecked(True)
         capture(window, 'details.png')
         window.diag.scrollToBottom()

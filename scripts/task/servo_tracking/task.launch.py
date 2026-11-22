@@ -97,6 +97,7 @@ def build(context):
             has_acceleration_limits=True, max_acceleration=float(config['joint_acceleration']))
     ns = '/piper_servo'
     feedback = ns + ('/feedback/joint_states' if mode == 'real' else '/commanded_joint_states')
+    servo_feedback = ns+'/guard/servo_joint_states' if vision and mode == 'real' else feedback
     remaps = [('/tf', ns+'/tf'), ('/tf_static', ns+'/tf_static'), ('joint_states', feedback)]
     model_parameters = [moveit.robot_description, moveit.robot_description_semantic,
                         moveit.robot_description_kinematics, moveit.joint_limits]
@@ -135,7 +136,7 @@ def build(context):
         'command_in_type': 'speed_units', 'scale': {'linear': config['linear_speed'], 'rotational': config['angular_speed'], 'joint': 1. if gamepad_mode else .3},
         'joint_command_in_topic': ns+'/servo_node/delta_joint_cmds',
         'command_out_type': 'trajectory_msgs/JointTrajectory', 'command_out_topic': ns+'/servo/trajectory',
-        'joint_topic': feedback, 'monitored_planning_scene_topic': ns+'/monitored_planning_scene',
+        'joint_topic': servo_feedback, 'monitored_planning_scene_topic': ns+'/monitored_planning_scene',
         'is_primary_planning_scene_monitor': False, 'check_collisions': True, 'collision_check_rate': 30.,
         'self_collision_proximity_threshold': .01, 'scene_collision_proximity_threshold': .025,
         'joint_limit_margins': [config['joint_margin']], 'incoming_command_timeout': config['command_timeout'],

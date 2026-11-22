@@ -42,7 +42,8 @@ def scenario(offset, tilt, roll=0., images=False):
     poses = []
     detector = SimpleNamespace(frame=SIM_FRAME, pattern=cfg['pattern'], bridge=CvBridge(), search=BoardSearch(tracking=True),
         points=object_grid(cfg['pattern'], cfg['size']), poses=SimpleNamespace(publish=poses.append),
-        preview=SimpleNamespace(get_subscription_count=lambda: 0))
+        projection=None, preview=SimpleNamespace(get_subscription_count=lambda: 0),
+        get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=0)))
     info = CameraInfo(width=640, height=480, k=K.ravel().tolist(), d=[0.]*5, distortion_model='plumb_bob')
     info.header.frame_id = SIM_FRAME
     settled, first_reentry, verified, frames = [], None, 0, 0

@@ -27,7 +27,7 @@ bash scripts/piperl/run.sh python -m unittest tests.test_servo_guard_recovery -v
 
 | 入口 | 前置条件与范围 |
 | --- | --- |
-| `gamepad_sim_integration.py` | 自建纯模拟 Servo/Guard/JTC 栈，审计 GenericSystem 且无实机驱动；验证单轴与笛卡尔共 24 方向的 Jog、Servo 输出和模拟反馈/FK、切换残留、选轴边沿、LB/B/失联锁定，以及独立近边界场景的向外受限与反向退回；当前结果见[手柄验证矩阵](../scripts/tools/gamepad_control/VALIDATION.md) |
+| `gamepad_sim_integration.py` | 自建纯模拟 Servo/Guard/JTC 栈并核对 GenericSystem。检查三种模式各 12 个方向的 Jog、Servo 输出和模拟反馈/FK，以及切换、选轴、LB/B、失联锁定和近边界反向退回。见[手柄验证矩阵](../scripts/tools/gamepad_control/VALIDATION.md) |
 | `servo_integration.py`、`servo_goal_preview_integration.py` | 接入已经独立启动的 `--mode sim` 栈，验证目标、预览和反馈流程 |
 | `servo_rotation_translation_integration.py` | 自建 Domain 91 仿真，验证旋转和平移顺序、边界恢复与动作交接 |
 | `servo_live_drag_integration.py` | 自建 Domain 94 仿真，对实际 MoveIt IK 注入测试延迟 |
@@ -44,7 +44,7 @@ bash scripts/piperl/run.sh python -m unittest tests.test_servo_guard_recovery -v
 PIPERL_ROS_DOMAIN_ID=76 bash scripts/piperl/run.sh python tests/gamepad_sim_integration.py
 ```
 
-脚本固定使用 `mode:=sim`、`gamepad_input_source:=fixture`、`rviz:=false`；发现已有 `/piper_servo` 栈便退出。每轮在 `outputs/gamepad_control/two_modes_<时间>_d<Domain>_<进程号>/` 保存 `summary.json`、两次启动日志和进程清理报告。边界场景只修改该输出目录里的仿真配置副本。
+脚本固定使用 `mode:=sim`、`gamepad_input_source:=fixture`、`rviz:=false`。发现已有 `/piper_servo` 栈便退出。每轮在 `outputs/gamepad_control/three_modes_<时间>_d<Domain>_<进程号>/` 保存 `summary.json`、启动日志和进程清理报告。边界场景使用该输出目录里的仿真配置副本。
 
 ## 纯数学性能对照
 

@@ -70,6 +70,7 @@ QPushButton#jointTile:focus { border: 2px solid #7979e9; }
 QLabel#axisName { font-weight: 600; font-size: 20px; }
 QLabel#reading, QLabel#speedValue { font-family: "DejaVu Sans Mono", monospace; font-size: 34px; }
 QLabel#reading[selected="true"] { color: #ffffff; }
+QLabel#caption[selected="true"] { color: #ffffff; }
 QLabel#tileMark { font-size: 18px; font-weight: 700; }
 QLabel[selected="true"] { color: white; }
 QLabel#speedValue { font-size: 27px; }

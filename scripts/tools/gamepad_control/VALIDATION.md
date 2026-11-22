@@ -1,6 +1,12 @@
 # 手柄控制当前验证矩阵
 
-更新日期为 2026-11-19，Asia/Shanghai。以下按日期记录当前界面检查、回零待验收项和两模式基线。
+更新日期为 2026-11-22，Asia/Shanghai。以下记录手柄功能的当前检查与历次验证。
+
+## 2026-11-22 笛卡尔单轴
+
+- 97 项手柄与回零回归通过。Qt 检查覆盖第三个模式按钮、卡片点击与后端确认、模式各自的选轴和速度记忆，以及 600 至 1280 像素宽窗口的布局。运行记录和截图分别位于 `outputs/gamepad_control/cartesian_axis/pytest.txt` 和 `outputs/generated_images/gamepad_control/cartesian_axis.png`。
+- 用 PiPER-L URDF、项目默认仿真姿态和真实手柄后端进行进程内运动学验证。将 JointJog 积分为模拟关节反馈，X/Y/Z/Roll/Pitch/Yaw 的全部 12 个正负方向通过 FK 方向检查。测试同时检查选轴后需要重新回中再按 LB、纵向回中时发出零速、松开 LB 后进入停止流程。
+- 独立 ROS 仿真在 Domain 127 启动时遇到 DDS 套接字权限错误，未收到后端和 guard 的就绪状态。模拟栈和自有进程均已清理，日志见 `outputs/gamepad_control/cartesian_axis/simulation.txt`。MoveIt Servo 多进程联调与实机运动尚待验证。
 
 ## 2026-11-19 手柄诊断与状态显示
 

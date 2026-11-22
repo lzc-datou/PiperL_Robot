@@ -10,6 +10,7 @@ try:
     from scripts.task.servo_tracking.core import JOINTS
     from scripts.task.servo_tracking.stop_observer import StopObserver
     from sensor_msgs.msg import JointState
+    from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
     ROS = True
 except ImportError:
     ROS = False
@@ -50,12 +51,12 @@ class ServoGuardRecoveryTests(unittest.TestCase):
                    stable_since=0., stable_q=None, last_trajectory=100.,
                    servo_code=0, servo_received=100., last_forwarded=None,
                    last_forwarded_time=0., action_active=False,
-                   config={'feedback_timeout': .25, 'hard_stop_singularity_threshold': 30.,
+                   config={'feedback_timeout': .25, 'hard_stop_singularity_threshold': 30., 'command_timeout': .20,
                            'max_joint_tracking_error': .1, 'joint_speed': .3},
                    feedback=Mock(), commanded=Mock(), model=Mock(), output=Mock(),
                    driver_output=Mock(), gate=FakeService(), hold=FakeService(),
                    pause_servo=FakeService(), cancel_action=FakeService(), get_logger=Mock(), get_clock=Mock(),
-                   count_publishers=Mock(return_value=1))
+                   count_publishers=Mock(return_value=1), servo_joint_states=None, trajectory_tail=Mock())
         for name, method in Guard.__dict__.items():
             if callable(method) and not name.startswith('__'):
                 setattr(state, name, MethodType(method, state))
@@ -63,6 +64,7 @@ class ServoGuardRecoveryTests(unittest.TestCase):
         state.commanded.get.return_value = q.copy()
         state.feedback.stamp = state.commanded.stamp = 100.
         state.model.condition_number.return_value = 10.
+        state.model.planning_joints.side_effect = lambda angles, tolerance: np.asarray(angles).copy()
         state.output.get_subscription_count.return_value = 1
         state.health = Mock(return_value=q.copy())
         return state
@@ -107,6 +109,56 @@ class ServoGuardRecoveryTests(unittest.TestCase):
         state.pause_servo.complete()
         self.assertEqual(state.state, 'running')
         self.assertEqual(state.gate.calls, [])
+
+    def test_visual_preparation_stays_closed_until_current_first_step_is_confirmed(self):
+        state = self.guard()
+        state.visual_mode = True
+        state.publish_status = Mock()
+        request = NS(enable=True, commit=False, stop_generation=0)
+        response = state.vision_motion(request, NS(success=False, retry=False, message=''))
+        self.assertTrue(response.success)
+        self.sync_and_reset(state)
+        state.pause_servo.complete()
+        self.assertEqual(state.state, 'prepared')
+        self.assertTrue(state.closed)
+        self.assertEqual(state.gate.calls, [])
+        # Even a repeated prepare cannot open the driver gate.
+        self.assertTrue(state.vision_motion(request, NS(success=False, retry=False, message='')).success)
+        request.commit = True
+        request.checked_joints = state.health().tolist()
+        request.preparation_epoch = state.epoch-1
+        request.valid_until = 100.38
+        self.assertTrue(state.vision_motion(request, NS(success=False, retry=False, message='')).retry)
+        request.preparation_epoch = state.epoch
+        self.now.return_value = 100.39
+        self.assertTrue(state.vision_motion(request, NS(success=False, retry=False, message='')).retry)
+        request.valid_until = 100.48
+        request.checked_joints[0] += .01
+        self.assertTrue(state.vision_motion(request, NS(success=False, retry=False, message='')).retry)
+        self.assertEqual(state.gate.calls, [])
+        request.checked_joints = state.health().tolist()
+        self.assertTrue(state.vision_motion(request, NS(success=False, retry=False, message='')).success)
+        self.assertEqual(state.state, 'opening')
+        state.gate.complete()
+        self.assertEqual(state.state, 'running')
+
+    def test_driver_acknowledgement_needs_valid_deadline_and_unchanged_first_step_start(self):
+        for elapsed, joint_shift in ((.05, .0), (.01, .004)):
+            with self.subTest(elapsed=elapsed, joint_shift=joint_shift):
+                self.now.return_value = 100.
+                state = self.guard()
+                state.visual_mode = True
+                state.state = 'prepared'
+                request = NS(enable=True, commit=True, stop_generation=0, preparation_epoch=state.epoch,
+                             checked_joints=state.health().tolist(), valid_until=100.04)
+                self.assertTrue(state.vision_motion(request, NS(success=False, retry=False, message='')).success)
+                self.now.return_value = 100.+elapsed
+                state.health.return_value[0] += joint_shift
+                state.gate.complete()
+                self.assertEqual(state.state, 'holding')
+                self.assertFalse(state.gate.calls[-1][0].data)
+                state.on_trajectory(NS())
+                state.driver_output.publish.assert_not_called()
 
     def test_singularity_pauses_closes_holds_and_never_auto_resumes(self):
         state = self.guard()
@@ -208,6 +260,31 @@ class ServoGuardRecoveryTests(unittest.TestCase):
             self.assertEqual(state.state, 'paused')
             self.assertEqual(state.bound_reference, state.last_visual_knot if age < .2 else None)
             self.assertFalse(state.gate.calls[-1][0].data)
+
+    def test_tail_feedback_comes_from_forwarded_position_points(self):
+        state = self.guard()
+        state.state, state.visual_mode = 'running', True
+        state.trajectory_tail = Mock()
+        first = [0., 1.4, -1.2, .3, 1., 0.]
+        second = [0., 1.4, -1.2, .304, 1., 0.]
+        msg = JointTrajectory(joint_names=JOINTS, points=[
+            JointTrajectoryPoint(positions=first, velocities=[0.]*6),
+            JointTrajectoryPoint(positions=second, velocities=[0.]*6)])
+        msg.header.stamp.sec, msg.header.stamp.nanosec = 100, 980_000_000
+        msg.points[-2].time_from_start.nanosec = 20_000_000
+        msg.points[-1].time_from_start.nanosec = 30_000_000
+        with patch('scripts.task.servo_tracking.guard.validate_trajectory') as validate:
+            state.on_trajectory(msg)
+            state.trajectory_tail.publish.assert_called_once()
+            sample = state.trajectory_tail.publish.call_args.args[0]
+            np.testing.assert_allclose(sample.position, second)
+            self.assertAlmostEqual(sample.velocity[3], .4)
+            self.assertEqual((sample.header.stamp.sec, sample.header.stamp.nanosec), (101, 10_000_000))
+            self.assertFalse(state.output.publish.call_args.args[0].points[-1].velocities)
+            validate.side_effect = ValueError('invalid endpoint')
+            state.on_trajectory(msg)
+        state.trajectory_tail.publish.assert_called_once()
+        self.assertEqual(state.state, 'fault')
 
     def test_native_pause_cause_survives_status_updates_and_stop_clears_it(self):
         state = self.guard()

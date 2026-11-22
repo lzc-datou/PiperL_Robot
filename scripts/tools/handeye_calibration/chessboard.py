@@ -1,5 +1,5 @@
 """Publish a fixed chessboard's pose in the D405 color optical frame."""
-from collections import deque
+from collections import Counter, deque
 import json
 import math
 from threading import Event, Lock, Thread
@@ -15,10 +15,26 @@ from message_filters import SimpleFilter, Subscriber, TimeSynchronizer
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Header
+
+PROJECTION_QOS = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+TRACKING_AGE_NS = 150_000_000
+TRACKING_ROI_AGE_NS = 250_000_000
+RECHECK_INTERVAL_S = .075
+
+
+def camera_intrinsics(info):
+    k = np.asarray(info.k, dtype=np.float64).reshape(3, 3)
+    d = np.asarray(info.d, dtype=np.float64)
+    supported = {'plumb_bob': 5, 'rational_polynomial': 8}
+    if (supported.get(info.distortion_model) != d.size or not np.isfinite(d).all()
+            or not np.isfinite(k).all() or min(k[0, 0], k[1, 1]) <= 0
+            or min(info.width, info.height) <= 0):
+        raise ValueError('CameraInfo 内参无效或畸变模型不受支持')
+    return k, d
 
 
 def board_settings(settings):
@@ -117,9 +133,18 @@ class BoardSearch:
         self.tracking = tracking
         self.previous_gray = self.previous_corners = self.previous_stamp = None
         self.calibration_roi = None
+        self.tracking_roi = None
         self.misses = 0
+        self.failure = ''
         self.method = ''
         self.track_ms = self.search_ms = self.pose_ms = 0.
+
+    @staticmethod
+    def search_region(shape, corners):
+        h, w = shape
+        x, y, width, height = cv2.boundingRect(corners)
+        pad = math.ceil(max(width, height)*.25)+8
+        return max(0, x-pad), max(0, y-pad), min(w, x+width+pad), min(h, y+height+pad)
 
     def track(self, gray, pattern):
         params = dict(winSize=(15, 15), maxLevel=2,
@@ -150,20 +175,18 @@ class BoardSearch:
             corners += np.array([left, top], dtype=np.float32)
             pose = solve_pose(points, corners, k, d)
             if pose is not None:
-                x, y, width, height = cv2.boundingRect(corners)
-                pad = math.ceil(max(width, height)*.25)+8
-                self.calibration_roi = (max(0, x-pad), max(0, y-pad),
-                                        min(w, x+width+pad), min(h, y+height+pad))
+                self.calibration_roi = self.search_region(gray.shape, corners)
                 return corners, pose
         return None, None
 
-    def locate(self, gray, pattern, points, k, d, stamp_ns=None):
+    def locate(self, gray, pattern, points, k, d, stamp_ns=None, *, whole_frame=True):
         if not self.tracking:
             return self.locate_calibration(gray, pattern, points, k, d)
         self.track_ms = self.search_ms = self.pose_ms = 0.
+        self.failure = ''
         corners = result = None
         fresh_pair = (stamp_ns is None or self.previous_stamp is None or
-                      0 < stamp_ns-self.previous_stamp <= 150_000_000)
+                      0 < stamp_ns-self.previous_stamp <= TRACKING_AGE_NS)
         if (self.previous_gray is not None and self.previous_gray.shape == gray.shape
                 and len(self.previous_corners) == len(points) and fresh_pair):
             self.method = 'flow'
@@ -174,44 +197,73 @@ class BoardSearch:
                 start = time.perf_counter()
                 result = solve_pose(points, corners, k, d)
                 self.pose_ms = (time.perf_counter()-start)*1000.
+        invalid_corners = corners if result is None else None
+        if result is None and self.tracking_roi is not None:
+            stamp, shape, (left, top, right, bottom) = self.tracking_roi
+            recent = stamp_ns is None or stamp is None or 0 < stamp_ns-stamp <= TRACKING_ROI_AGE_NS
+            if recent and shape == gray.shape:
+                if (right-left)*(bottom-top) < .85*gray.size:
+                    start = time.perf_counter()
+                    corners = ordered_corners(gray[top:bottom, left:right], pattern, fast=True)
+                    self.method = 'roi'
+                    self.search_ms = (time.perf_counter()-start)*1000.
+                    if corners is not None:
+                        corners += np.array([left, top], dtype=np.float32)
+                        if visible_grid(gray, corners, pattern):
+                            start = time.perf_counter()
+                            result = solve_pose(points, corners, k, d)
+                            self.pose_ms += (time.perf_counter()-start)*1000.
+                            if result is None:
+                                invalid_corners = corners
+        if result is None and whole_frame:
+            corners, result = self.locate_whole_frame(gray, pattern, points, k, d)
         if result is None:
-            start = time.perf_counter()
-            # One whole-grid search per exposure. On a miss use native pixels
-            # on the next frame for distant/small boards.
-            reduced = min(gray.shape) >= 320 and self.misses % 2 == 0
-            scan = gray
-            if reduced:
-                scan_size = (round(gray.shape[1]*.75), round(gray.shape[0]*.75))
-                scan = cv2.resize(gray, scan_size, interpolation=cv2.INTER_AREA)
-            self.method = 'sb75' if reduced else 'sb100'
-            # SB expects a light outer margin. Only the search image is padded;
-            # every measured corner and its four quadrants must pass on real pixels.
-            border = 12
-            padded = cv2.copyMakeBorder(scan, border, border, border, border, cv2.BORDER_CONSTANT, value=255)
-            corners = ordered_corners(padded, pattern)
-            if corners is not None:
-                corners -= border
-                xy = corners.reshape(-1, 2)
-                if np.any(xy < 0) or np.any(xy >= scan.shape[::-1]):
-                    corners = None
-            if corners is not None and reduced:
-                ratio = np.array([gray.shape[1]/scan.shape[1], gray.shape[0]/scan.shape[0]], np.float32)
-                corners = (corners + .5)*ratio - .5
-                cv2.cornerSubPix(gray, corners, (3, 3), (-1, -1),
-                                 (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, .01))
-            if corners is not None and not visible_grid(gray, corners, pattern):
-                corners = None
-            self.search_ms = (time.perf_counter()-start)*1000.
-            if corners is not None:
-                start = time.perf_counter()
-                result = solve_pose(points, corners, k, d)
-                self.pose_ms += (time.perf_counter()-start)*1000.
-        if result is None:
+            if not whole_frame or corners is None:
+                corners = invalid_corners
+            self.failure = 'grid_missing' if corners is None else 'pose_invalid'
             self.previous_gray = self.previous_corners = self.previous_stamp = None
             self.misses += 1
         else:
-            self.previous_gray, self.previous_corners, self.previous_stamp = gray, corners, stamp_ns
+            self.seed(gray, corners, stamp_ns)
             self.misses = 0
+        return corners, result
+
+    def seed(self, gray, corners, stamp_ns):
+        self.previous_gray, self.previous_corners, self.previous_stamp = gray, corners, stamp_ns
+        self.tracking_roi = stamp_ns, gray.shape, self.search_region(gray.shape, corners)
+
+    def locate_whole_frame(self, gray, pattern, points, k, d):
+        start = time.perf_counter()
+        # Alternate native pixels with the cheaper reduced search.
+        reduced = min(gray.shape) >= 320 and self.misses % 2 == 0
+        scan = gray
+        if reduced:
+            scan_size = (round(gray.shape[1]*.75), round(gray.shape[0]*.75))
+            scan = cv2.resize(gray, scan_size, interpolation=cv2.INTER_AREA)
+        self.method = 'sb75' if reduced else 'sb100'
+        # Search padding helps SB at the edge. Confirm the measured
+        # corners and their four quadrants on the original image.
+        border = 12
+        padded = cv2.copyMakeBorder(scan, border, border, border, border, cv2.BORDER_CONSTANT, value=255)
+        corners = ordered_corners(padded, pattern)
+        if corners is not None:
+            corners -= border
+            xy = corners.reshape(-1, 2)
+            if np.any(xy < 0) or np.any(xy >= scan.shape[::-1]):
+                corners = None
+        if corners is not None and reduced:
+            ratio = np.array([gray.shape[1]/scan.shape[1], gray.shape[0]/scan.shape[0]], np.float32)
+            corners = (corners + .5)*ratio - .5
+            cv2.cornerSubPix(gray, corners, (3, 3), (-1, -1),
+                             (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, .01))
+        if corners is not None and not visible_grid(gray, corners, pattern):
+            corners = None
+        self.search_ms += (time.perf_counter()-start)*1000.
+        result = None
+        if corners is not None:
+            start = time.perf_counter()
+            result = solve_pose(points, corners, k, d)
+            self.pose_ms += (time.perf_counter()-start)*1000.
         return corners, result
 
 
@@ -264,6 +316,8 @@ class ChessboardDetector(Node):
         self.search = BoardSearch(tracking=tracking)
         self.bridge = CvBridge()
         self.poses = self.create_publisher(PoseStamped, pose_topic, 1)
+        self.projection = self.create_publisher(CameraInfo, pose_topic + '/camera_info', PROJECTION_QOS) if tracking else None
+        self.projection_key = None
         self.preview = self.create_publisher(Image, preview_topic, 1)
         self.misses = self.create_publisher(Header, pose_topic + "/not_visible", 1)
         if tracking and camera_metadata:
@@ -294,13 +348,23 @@ class ChessboardDetector(Node):
         self.overwritten = 0
         self.timing_since = time.monotonic()
         self.timing_samples = []
+        self.detection_outcomes = Counter()
+        self.last_pair_received = self.last_detection_completed = self.timing_since
         self.convert_ms = self.publish_ms = 0.
         self.workers = []
         if tracking:
             self.closing = Event()
+            self.recheck_search = BoardSearch(tracking=True)
+            self.recheck_frame = self.recheck_result = None
+            self.recheck_after = 0.
+            self.reported_stamp = 0
+            self.recheck_outcomes = Counter()
+            self.recheck_pose_ages = []
             self.wake_detection = self.start_worker(self.detect_latest)
+            self.wake_recheck = self.start_worker(self.recheck_latest)
             wake_preview = self.start_worker(self.preview_latest)
             self.create_timer(.1, wake_preview)
+            self.create_timer(.25, self.check_tracking_stream)
         else:
             ready = self.create_guard_condition(self.detect_latest, callback_group=MutuallyExclusiveCallbackGroup())
             self.wake_detection = ready.trigger
@@ -359,6 +423,15 @@ class ChessboardDetector(Node):
         if time.monotonic()-self.last_metadata > 2.:
             self.get_logger().warning('等待同帧彩色图、内参和 D405 metadata，请检查相机话题', throttle_duration_sec=3.)
 
+    def check_tracking_stream(self):
+        now = time.monotonic()
+        if now-self.last_pair_received > .25:
+            self.get_logger().warning('棋盘观测 [input_interrupted] 彩色图、内参或曝光时间配对中断',
+                                      throttle_duration_sec=1.)
+        elif now-self.last_detection_completed > .25:
+            self.get_logger().warning('棋盘观测 [result_interrupted] 有新图像配对，检测结果未更新',
+                                      throttle_duration_sec=1.)
+
     def queue_capture(self, image, info, metadata):
         self.last_metadata = time.monotonic()
         if metadata.header.frame_id != image.header.frame_id:
@@ -382,12 +455,61 @@ class ChessboardDetector(Node):
                 if stamp_ns <= self.latest_pair[0]:
                     return
                 self.overwritten += 1
-            self.latest_pair = stamp_ns, image, info, time.monotonic(), capture_ns
+            self.last_pair_received = time.monotonic()
+            self.latest_pair = stamp_ns, image, info, self.last_pair_received, capture_ns
         self.wake_detection()
+
+    def recheck_latest(self):
+        now = time.monotonic()
+        with self.pair_lock:
+            if now < self.recheck_after or self.recheck_frame is None:
+                return
+            frame, self.recheck_frame = self.recheck_frame, None
+        stamp, image, header, gray, k, d, invalid = frame
+        if stamp <= self.reported_stamp:
+            return
+        self.recheck_after = now+RECHECK_INTERVAL_S
+        search = self.recheck_search
+        search.search_ms = search.pose_ms = 0.
+        try:
+            corners, result = search.locate_whole_frame(gray, self.pattern, self.points, k, d)
+        except cv2.error as error:
+            self.get_logger().warning(f'棋盘整板重检失败：{error}', throttle_duration_sec=5.)
+            return
+        search.misses = search.misses+1 if result is None else 0
+        with self.pair_lock:
+            self.recheck_result = (stamp, image, header, gray, corners if corners is not None else invalid,
+                                   result, search.method, (time.monotonic()-now)*1000.)
+        self.wake_detection()
+
+    def accept_recheck(self, stamp, image, header, gray, corners, result, method, elapsed):
+        age = self.get_clock().now().nanoseconds-stamp
+        if stamp <= self.reported_stamp or age < 0:
+            return
+        if result is not None and age <= TRACKING_ROI_AGE_NS:
+            # A completed recheck is a useful seed for a new exposure even
+            # when its own exposure can no longer authorize a motion.
+            self.search.seed(gray, corners, stamp)
+        if age > TRACKING_AGE_NS:
+            self.recheck_outcomes['expired'] += 1
+            self.get_logger().warning(f'棋盘整板重检已过期：曝光年龄 {age/1e6:.0f} ms，重检 {elapsed:.1f} ms，路径 {method}',
+                                      throttle_duration_sec=1.)
+            return
+        self.last_detection_completed = time.monotonic()
+        self.reported_stamp = stamp
+        if self.publish_detection(image, header, corners, result):
+            self.recheck_pose_ages.append(self.pose_age_ms)
+            self.recheck_outcomes[method] += 1
+        else:
+            self.recheck_outcomes['grid_missing' if corners is None else 'pose_invalid'] += 1
 
     def detect_latest(self):
         with self.pair_lock:
             pair, self.latest_pair = self.latest_pair, None
+            recheck = getattr(self, 'recheck_result', None)
+            self.recheck_result = None
+        if recheck is not None:
+            self.accept_recheck(*recheck)
         if pair is not None:
             stamp, image, info, queued, capture_ns = pair
             start = time.monotonic()
@@ -395,6 +517,10 @@ class ChessboardDetector(Node):
             success = self.detect(image, info) if capture_ns is None else self.detect(image, info, capture_ns)
             elapsed = time.monotonic()-start
             if self.search.tracking:
+                if self.search.failure != 'search_pending':
+                    self.last_detection_completed = start+elapsed
+                outcome = self.search.method if success else self.search.failure or 'frame_invalid'
+                self.detection_outcomes[outcome] += 1
                 # Preview runs in its own callback and is not part of pose latency.
                 total_ms = (age+elapsed)*1000.
                 self.timing_samples.append((bool(success), self.search.method == 'flow', elapsed*1000.,
@@ -410,31 +536,40 @@ class ChessboardDetector(Node):
                 if start-self.timing_since >= 5.:
                     data = np.asarray(self.timing_samples)
                     valid = data[:, 0].astype(bool)
-                    age_p95 = f'{np.percentile(data[valid, 3], 95):.0f}' if valid.any() else '—'
+                    ages = np.r_[data[valid, 3], self.recheck_pose_ages]
+                    age_p95 = f'{np.percentile(ages, 95):.0f}' if len(ages) else '—'
                     with self.pair_lock:
                         overwritten, self.overwritten = self.overwritten, 0
                     self.get_logger().info(
-                        f'棋盘跟踪 {start-self.timing_since:.1f} s：处理 {len(data)} 帧，位姿 {sum(valid)}，'
+                        f'棋盘跟踪 {start-self.timing_since:.1f} s：处理 {len(data)} 帧，位姿 {len(ages)}，'
                         f'光流通过 {int(data[:, 1].sum())}，被更新配对替换 {overwritten}，'
-                        f'处理 P95 {np.percentile(data[:, 2], 95):.1f} ms，发布时曝光年龄 P95 {age_p95} ms')
+                        f'处理 P95 {np.percentile(data[:, 2], 95):.1f} ms，发布时曝光年龄 P95 {age_p95} ms，'
+                        f'检测分类 {dict(self.detection_outcomes)}，异步整板 {dict(self.recheck_outcomes)}')
                     self.timing_since = start
                     self.timing_samples.clear()
+                    self.detection_outcomes.clear()
+                    self.recheck_pose_ages.clear()
+                    self.recheck_outcomes.clear()
 
     def detect(self, image, info, capture_ns=None):
         self.convert_ms = self.publish_ms = 0.
         self.search.method = 'invalid'
+        self.search.failure = ''
         self.search.track_ms = self.search.search_ms = self.search.pose_ms = 0.
         if (image.header.frame_id != self.frame or info.header.frame_id != self.frame
                 or (image.width, image.height) != (info.width, info.height)):
             self.get_logger().warning('彩色图与 CameraInfo 的 frame 或尺寸不匹配。', throttle_duration_sec=5.0)
             return
-        k = np.asarray(info.k, dtype=np.float64).reshape(3, 3)
-        d = np.asarray(info.d, dtype=np.float64)
-        supported = {'plumb_bob': 5, 'rational_polynomial': 8}
-        if (supported.get(info.distortion_model) != d.size or not np.isfinite(d).all()
-                or not np.isfinite(k).all() or min(k[0, 0], k[1, 1]) <= 0):
+        try:
+            k, d = camera_intrinsics(info)
+        except ValueError:
             self.get_logger().warning('D405 的 CameraInfo 内参无效或畸变模型不受支持。', throttle_duration_sec=5.0)
             return
+        if self.projection is not None:
+            key = (info.width, info.height, info.distortion_model, tuple(info.k), tuple(info.d))
+            if key != self.projection_key:
+                self.projection.publish(info)
+                self.projection_key = key
         header = image.header
         if capture_ns is not None:
             header = type(header)(frame_id=header.frame_id, stamp=Time(
@@ -444,30 +579,50 @@ class ChessboardDetector(Node):
             gray = self.bridge.imgmsg_to_cv2(image, 'mono8')
             stamp_ns = header.stamp.sec*10**9 + header.stamp.nanosec
             self.convert_ms = (time.perf_counter()-start)*1000.
-            corners, result = self.search.locate(gray, self.pattern, self.points, k, d, stamp_ns)
-            if result is not None:
-                start = time.perf_counter()
-                rotation, translation, _ = result
-                pose = PoseStamped(header=header)
-                pose.pose.position.x, pose.pose.position.y, pose.pose.position.z = map(float, translation)
-                q = Rotation.from_matrix(rotation).as_quat()
-                pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z, pose.pose.orientation.w = map(float, q)
-                self.poses.publish(pose)
-                self.publish_ms = (time.perf_counter()-start)*1000.
-                self.pose_age_ms = (self.get_clock().now().nanoseconds-stamp_ns)/1e6
-            elif corners is None:
-                # A processed image without a grid distinguishes occlusion from lost camera input.
-                self.misses.publish(header)
-            if self.preview.get_subscription_count():
-                preview = image, header, corners, result
-                if self.search.tracking:
+            split_search = self.search.tracking and hasattr(self, 'wake_recheck')
+            if split_search and stamp_ns <= self.reported_stamp:
+                return False
+            corners, result = self.search.locate(gray, self.pattern, self.points, k, d, stamp_ns,
+                                                 whole_frame=not split_search)
+            if split_search and result is None:
+                low, high, _, _ = cv2.minMaxLoc(gray)
+                if corners is not None or high-low >= 12:
+                    # Missing a grid in the local search leaves the exposure
+                    # unresolved. Only the full result can confirm absence.
                     with self.pair_lock:
-                        self.latest_preview = preview
-                else:
-                    self.publish_preview(*preview)
-            return result is not None
+                        self.recheck_frame = (stamp_ns, image, header, gray, k, d, corners)
+                    self.search.failure = 'search_pending'
+                    self.wake_recheck()
+                    return False
+                self.search.method = 'low_contrast'
+            if split_search:
+                self.reported_stamp = stamp_ns
+            return self.publish_detection(image, header, corners, result)
         except (cv2.error, CvBridgeError) as error:
             self.get_logger().warning(f'棋盘格图像处理失败：{error}', throttle_duration_sec=5.0)
+
+    def publish_detection(self, image, header, corners, result):
+        if result is not None:
+            start = time.perf_counter()
+            rotation, translation, _ = result
+            pose = PoseStamped(header=header)
+            pose.pose.position.x, pose.pose.position.y, pose.pose.position.z = map(float, translation)
+            q = Rotation.from_matrix(rotation).as_quat()
+            pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z, pose.pose.orientation.w = map(float, q)
+            self.poses.publish(pose)
+            self.publish_ms = (time.perf_counter()-start)*1000.
+            stamp_ns = header.stamp.sec*10**9 + header.stamp.nanosec
+            self.pose_age_ms = (self.get_clock().now().nanoseconds-stamp_ns)/1e6
+        elif corners is None:
+            self.misses.publish(header)
+        if self.preview.get_subscription_count():
+            preview = image, header, corners, result
+            if self.search.tracking:
+                with self.pair_lock:
+                    self.latest_preview = preview
+            else:
+                self.publish_preview(*preview)
+        return result is not None
 
     def preview_latest(self):
         with self.pair_lock:

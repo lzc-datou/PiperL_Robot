@@ -30,20 +30,82 @@ def pose7(transform):
     return np.r_[transform[:3, 3], Rotation.from_matrix(transform[:3, :3]).as_quat()]
 
 
+def nearby_poses(target, actual, distance, position_tol, orientation_tol, *, boundary=None):
+    """Candidate poses along the approach, shortened at a geometric boundary."""
+    current_rotation = Rotation.from_quat(actual[3:])
+    goal_rotation = Rotation.from_quat(target[3:])
+    displacement = target[:3]-actual[:3]
+    correction = (goal_rotation*current_rotation.inv()).as_rotvec()
+    angle = np.linalg.norm(correction)
+
+    def step(direction, turn, fraction):
+        def pose_at(amount):
+            rotation = Rotation.from_rotvec(turn*amount)*current_rotation
+            return np.r_[actual[:3]+direction*amount, rotation.as_quat()]
+
+        if boundary is not None and boundary(pose_at(fraction)):
+            if boundary(actual):
+                return None  # No interior point on this portion of the approach.
+            low, high = 0., fraction
+            for _ in range(12):
+                mid = (low+high)/2.
+                if boundary(pose_at(mid)):
+                    high = mid
+                else:
+                    low = mid
+            fraction = low
+        if (np.linalg.norm(direction)*fraction <= position_tol and
+                np.linalg.norm(turn)*fraction <= orientation_tol):
+            return None
+        return pose_at(fraction)
+
+    fraction = min(.5, .025/max(np.linalg.norm(displacement), 1e-12), np.deg2rad(4.)/max(angle, 1e-12))
+    mixed = step(displacement, correction, fraction)
+    if mixed is not None:
+        yield ('分段纠倾' if angle*fraction > orientation_tol else '分段接近'), mixed
+    if angle > orientation_tol:
+        # Preserve the desired standoff with the camera's current tool attitude.
+        direction = np.array([0., 0., 1.])
+        approach = displacement + distance*(goal_rotation.apply(direction)-current_rotation.apply(direction))
+        length = np.linalg.norm(approach)
+        translation = step(approach, np.zeros(3), min(.5, .015/max(length, 1e-12)))
+        if translation is not None:
+            yield '先平移', translation
+    if boundary is not None and mixed is not None:
+        previous = mixed
+        # Near a singular posture, even a short Cartesian displacement can
+        # require a large joint change. Offer smaller checks down to the deadband.
+        for ratio in (.4, .16, .064):
+            shorter = step(displacement, correction, ratio*fraction)
+            if shorter is None:
+                break
+            if not np.allclose(shorter, previous, atol=1e-6, rtol=0.):
+                yield '缩短接近步长', shorter
+                previous = shorter
+
+
 def settings(path=DEFAULT):
     path = Path(path).resolve()
     cfg = yaml.safe_load(path.read_text())
     cfg.setdefault('tracking_loss_timeout_s', 1.5)  # Existing task configurations.
     cfg.setdefault('brake_window_s', min(.10, cfg['tracking_loss_timeout_s']-cfg['max_age_s']))
     for key, value in dict(default_speed_scale=.5, stationary_position_m=.001, stationary_angle_deg=.35,
+                           frozen_progress_window_s=1.5, feedforward_filter_s=.06,
+                           feedforward_gain=.85, feedforward_max_mps=.12, feedforward_deadband_mps=.006,
+                           feedforward_position_band_m=.010,
+                           view_margin_px=14., view_prediction_s=.20,
                            center_filter_s=.05, linear_acceleration_mps2=.20, angular_acceleration_deg_s2=40.).items():
         cfg.setdefault(key, value)
     for key in ('distance_m', 'normal_tolerance_deg', 'linear_speed_mps', 'angular_speed_deg_s',
                 'max_age_s', 'max_feedback_gap_s', 'correction_target_deg',
-                'stationary_position_m', 'stationary_angle_deg', 'center_filter_s',
+                'stationary_position_m', 'stationary_angle_deg', 'center_filter_s', 'frozen_progress_window_s',
+                'feedforward_filter_s', 'feedforward_max_mps', 'feedforward_deadband_mps', 'feedforward_position_band_m',
+                'view_margin_px', 'view_prediction_s',
                 'linear_acceleration_mps2', 'angular_acceleration_deg_s2'):
         if not np.isfinite(cfg[key]) or cfg[key] <= 0:
             raise ValueError(f'{key} 必须是正有限数')
+    if not 0. <= cfg['feedforward_gain'] <= 1. or cfg['feedforward_deadband_mps'] >= cfg['feedforward_max_mps']:
+        raise ValueError('视觉前馈增益须在 0 至 1，死区须小于速度上限')
     if not 0 < cfg['brake_window_s'] <= min(.15, cfg['tracking_loss_timeout_s']-cfg['max_age_s']):
         raise ValueError('短时迟帧减速窗口应在失联超时以内且最多 0.15 秒')
     if not cfg['correction_target_deg'] < cfg['normal_tolerance_deg'] < 90:
@@ -97,6 +159,7 @@ class CameraTarget:
     center: np.ndarray
     direction: np.ndarray | None = None
     two_sided: bool = False
+    corners: np.ndarray | None = None
 
     def __post_init__(self):
         center = np.array(self.center, dtype=float, copy=True)
@@ -109,12 +172,19 @@ class CameraTarget:
             if direction.shape != (3,) or not np.isfinite(length) or length < 1e-8:
                 raise ValueError('目标方向无效')
             object.__setattr__(self, 'direction', direction / length)
+        if self.corners is not None:
+            corners = np.array(self.corners, dtype=float, copy=True)
+            if corners.ndim != 2 or corners.shape[1] != 3 or len(corners) < 4 or not np.isfinite(corners).all():
+                raise ValueError('棋盘角点无效')
+            object.__setattr__(self, 'corners', corners)
 
 
 def chessboard_target(cg, cfg):
     nx, ny = cfg['pattern']
     offset = np.array([nx-1, ny-1, 0.]) * (cfg['size']/2)
-    return CameraTarget(cg[:3, 3] + cg[:3, :3] @ offset, cg[:3, 2], two_sided=True)
+    grid = np.array([[0, 0, 0], [nx-1, 0, 0], [nx-1, ny-1, 0], [0, ny-1, 0]])*cfg['size']
+    corners = grid @ cg[:3, :3].T + cg[:3, 3]
+    return CameraTarget(cg[:3, 3] + cg[:3, :3] @ offset, cg[:3, 2], two_sided=True, corners=corners)
 
 
 @dataclass
@@ -127,6 +197,7 @@ class Goal:
     correcting: bool
     switched: bool
     viewing_cos: float | None
+    corners: np.ndarray | None = None
 
 
 def smooth_center(raw, previous_center, dt, tau):
@@ -194,7 +265,8 @@ class TargetGeometry:
             rotation = self.held_rotation
         self.sign, self.correcting = sign, correcting
         pose = np.r_[center - rotation[:, 2] * self.cfg['distance_m'], Rotation.from_matrix(rotation).as_quat()]
-        return Goal(pose, center, center_c, normal, angle, correcting, switched, viewing_cos)
+        corners = None if target.corners is None else target.corners @ bc[:3, :3].T + bc[:3, 3]
+        return Goal(pose, center, center_c, normal, angle, correcting, switched, viewing_cos, corners)
 
 
 def workspace_reason(position, cfg, radius):

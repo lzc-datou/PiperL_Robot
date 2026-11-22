@@ -4,8 +4,9 @@ from rosidl_runtime_py.convert import message_to_ordereddict
 
 from scripts.task.common.planning_scene import fingerprint
 from scripts.task.common.moveit_client import PlanningError
+from scripts.task.common.pose import pose_errors
 from scripts.task.common.run_logger import RunLog
-from scripts.task.common.schema import JOINTS
+from scripts.task.common.schema import JOINTS, validate_snapshot_model
 from .validation import inspect
 from .inputs import load_inputs
 
@@ -42,14 +43,31 @@ class ObstacleTask:
         config, scene = load_inputs(self.config_path, self.scene_path)
         self.client.settings = deepcopy(config['settings'])
         self.client.connect_model()
-        for point in config['points']: self.client.check_joints(point['joints_rad'])
-        self.client.start = tuple(config['points'][0]['joints_rad'])
+        if 'capture' in config:
+            validate_snapshot_model(config, self.client.urdf, self.client.model_sha256)
+        for point in config['points']:
+            if point['type'] == 'joint':
+                self.client.check_joints(point['joints_rad'])
+        if config['points'][0]['type'] == 'joint':
+            self.client.start = tuple(config['points'][0]['joints_rad'])
         self.client.waypoint_names = [p['name'] for p in config['points']]
         self.config, self.scene = config, scene
+
+    def tcp_pose(self, q):
+        settings = self.config['settings']
+        return self.client.fk(q, settings['frame_id'], settings['tcp_link'])
+
+    def prepare_start(self):
+        first = self.config['points'][0]
+        if first['type'] == 'pose':
+            start = self.client.solve_start_pose(first)
+            self.check_endpoint(first, start)
+            self.client.start = start
 
     def load_scene(self):
         self.reload()
         self.client.scene.apply(self.scene)
+        self.prepare_start()
         print('场景已更新；r 重新规划对比。', flush=True)
 
     def clear_scene(self):
@@ -79,7 +97,7 @@ class ObstacleTask:
                 if attempt == 5: raise
 
     def plan_sequence(self, log, stage):
-        start = list(self.config['points'][0]['joints_rad'])
+        start = list(self.client.start)
         trajectories = []
         for index, point in enumerate(self.config['points'][1:], 1):
             source = self.config['points'][index-1]['name']
@@ -92,8 +110,7 @@ class ObstacleTask:
                 actual_start = [joint.points[0].positions[i] for i in order]
                 if max(abs(a-b) for a, b in zip(start, actual_start)) > 1e-6:
                     raise RuntimeError('规划段起点不连续')
-                if max(abs(a-b) for a, b in zip(point['joints_rad'], endpoint)) > self.config['settings']['joint_tolerance_rad']:
-                    raise RuntimeError('规划终点超出目标关节容差')
+                self.check_endpoint(point, endpoint)
             except InterruptedError:
                 raise
             except Exception as exc:
@@ -108,6 +125,16 @@ class ObstacleTask:
         log.write(f'{stage}_trajectory.json', saved if len(trajectories) > 1 else saved['trajectories'][0])
         return trajectories
 
+    def check_endpoint(self, point, endpoint):
+        settings = self.config['settings']
+        if point['type'] == 'joint':
+            if max(abs(a-b) for a, b in zip(point['joints_rad'], endpoint)) > settings['joint_tolerance_rad']:
+                raise RuntimeError('规划终点超出目标关节容差')
+            return
+        distance, angle = pose_errors(self.tcp_pose(endpoint), point)
+        if distance > settings['position_tolerance_m'] or angle > settings['orientation_tolerance_rad']:
+            raise RuntimeError(f'{point["name"]}: TCP 终点超出位姿容差 ({distance*1000:.3f} mm, {angle:.6f} rad)')
+
     def inspect_sequence(self, trajectories):
         reports = []
         for index, trajectory in enumerate(trajectories, 1):
@@ -119,8 +146,9 @@ class ObstacleTask:
                     continuous_collision_proof=False)
 
     def check_waypoints(self, stage):
-        for point in self.config['points']:
-            if not self.client.state_validity(point['joints_rad']).valid:
+        for index, point in enumerate(self.config['points']):
+            q = self.client.start if index == 0 else point.get('joints_rad')
+            if q is not None and not self.client.state_validity(q).valid:
                 raise RuntimeError(f'{stage}: {point["name"]} 点与障碍物碰撞；请调整场景或点位')
 
     def baseline_scene(self):
@@ -132,7 +160,7 @@ class ObstacleTask:
         print(f'日志：{log.directory}', flush=True)
         result = dict(success=False, mode='preview_only', execution_available=False)
         client = self.client
-        goal = self.config['points'][-1]['joints_rad']
+        goal = self.config['points'][-1]
         result['point_names'] = [p['name'] for p in self.config['points']]
         result['segment_count'] = len(self.config['points'])-1
         try:
@@ -141,6 +169,7 @@ class ObstacleTask:
             log.write('model.json', dict(sha256=client.model_sha256, urdf=client.urdf, srdf=client.srdf))
             before = client.scene.apply(self.baseline_scene())
             clear_hash = fingerprint(before)
+            self.prepare_start()
             log.event('BASELINE', message='在基准场景中按相同点序规划整条路径')
             baseline = self.plan_sequence(log, 'baseline')
             baseline_check = self.inspect_sequence(baseline)
@@ -172,11 +201,14 @@ class ObstacleTask:
             result['avoidance'] = avoided
             if not avoided['valid']:
                 raise RuntimeError('绕障轨迹复查发现碰撞，拒绝展示为有效路径')
-            endpoints = [client.fk(p['joints_rad'], self.config['settings']['frame_id'],
-                                   self.config['settings']['tcp_link'])['position_m']
+            endpoints = [p['position_m'] if p['type'] == 'pose' else self.tcp_pose(p['joints_rad'])['position_m']
                          for p in self.config['points']]
             if invalid_goal_test:
-                result['invalid_goal_rejected'] = self.check_invalid_goal(goal, endpoints[-1])
+                goal_joints = goal.get('joints_rad')
+                if goal_joints is None:
+                    joint = avoidance[-1].joint_trajectory
+                    goal_joints = [joint.points[-1].positions[joint.joint_names.index(name)] for name in JOINTS]
+                result['invalid_goal_rejected'] = self.check_invalid_goal(goal_joints, endpoints[-1])
             baseline_path = [xyz for trajectory in baseline for xyz in self.path(trajectory)]
             avoidance_path = [xyz for trajectory in avoidance for xyz in self.path(trajectory)]
             if fingerprint(client.scene.get()) != scene_hash:
@@ -211,7 +243,10 @@ class ObstacleTask:
             if self.client.state_validity(goal).valid:
                 raise RuntimeError('负例箱体未与目标机器人碰撞，验证未成立')
             try:
-                self.client.plan(self.config['points'][-1], self.client.start, publish=False)
+                point = self.config['points'][-1]
+                if point['type'] == 'pose':
+                    point = dict(name=point['name'], type='joint', joints_rad=goal)
+                self.client.plan(point, self.client.start, publish=False)
             except RuntimeError as exc:
                 if 'State is in collision' not in str(exc): raise
                 return True

@@ -1,8 +1,51 @@
 """Match a camera exposure to a bracket of measured TCP feedback."""
 from collections import deque
+import math
+
+import numpy as np
 
 from scripts.tools.handeye_calibration.quality import interpolate_transform
 from .geometry import CameraTarget, chessboard_target, matrix
+
+
+def position_feedforward(estimate, error, band):
+    # Far-goal pursuit already uses the available acceleration. Fade out the
+    # extra speed there so a sudden reversal has less momentum to shed.
+    return estimate*max(0., 1.-np.linalg.norm(error)/band)
+
+
+class CenterVelocity:
+    """Estimate base-frame board translation from consecutive exposures."""
+    def __init__(self, config):
+        self.config = config
+        self.reset()
+
+    def reset(self):
+        self.stamp, self.center = 0., None
+        self.velocity = np.zeros(3)
+
+    def update(self, stamp, center):
+        dt = stamp-self.stamp
+        if self.center is not None and dt <= 0.:
+            return np.zeros(3)
+        maximum = self.config['feedforward_max_mps']
+        if self.center is None or dt > self.config['max_age_s']:
+            self.velocity[:] = 0.
+        else:
+            raw_velocity = (center-self.center)/dt
+            speed = np.linalg.norm(raw_velocity)
+            if speed > maximum*2.5 or speed < self.config['feedforward_deadband_mps']:
+                self.velocity[:] = 0.
+            else:
+                if raw_velocity @ self.velocity < 0.:
+                    self.velocity[:] = 0.
+                weight = -math.expm1(-dt/self.config['feedforward_filter_s'])
+                self.velocity += weight*(raw_velocity*min(1., maximum/max(speed, 1e-12))-self.velocity)
+        self.stamp, self.center = stamp, center.copy()
+        # The norm threshold avoids commanding motion from fixed-board PnP noise.
+        if np.linalg.norm(self.velocity) < self.config['feedforward_deadband_mps']:
+            return np.zeros(3)
+        return self.velocity*self.config['feedforward_gain']
 
 
 def stamp_seconds(msg):

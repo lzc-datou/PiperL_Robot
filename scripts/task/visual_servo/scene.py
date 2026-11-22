@@ -16,7 +16,7 @@ from std_msgs.msg import Bool, Header, String
 
 from servo_tracking.core import JOINTS, RobotModel
 from servo_tracking.node import pose_message
-from scripts.tools.handeye_calibration.chessboard import ChessboardDetector, spin_detector
+from scripts.tools.handeye_calibration.chessboard import ChessboardDetector, PROJECTION_QOS, spin_detector
 from .geometry import calibration, matrix, pose7, settings, SIM_FRAME, SIM_TOPIC
 from .observation import read_pose
 
@@ -87,6 +87,10 @@ class Fixture(Node):
         else:
             self.pose = self.create_publisher(PoseStamped, SIM_TOPIC, 1)
             self.misses = self.create_publisher(Header, SIM_TOPIC + "/not_visible", 1)
+            self.projection = self.create_publisher(CameraInfo, SIM_TOPIC + '/camera_info', PROJECTION_QOS)
+            info = CameraInfo(height=480, width=640, distortion_model='plumb_bob', d=[0.]*5, k=K.ravel().tolist())
+            info.header.frame_id = SIM_FRAME
+            self.projection.publish(info)
         self.create_timer(1/25, self.expose)
 
     def joints(self, msg):

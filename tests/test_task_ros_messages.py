@@ -53,6 +53,39 @@ class TaskMessageTests(unittest.TestCase):
         reply.pose_stamped=[p]
         self.assertEqual(fk_value(reply,'base_link','tcp_link')['orientation_xyzw'],[0,0,0,1])
         with self.assertRaises(RuntimeError): fk_value(reply,'wrong','tcp_link')
+
+    def test_local_fk_snapshot_checks_tcp_geometry_before_planning(self):
+        from pathlib import Path
+        from ament_index_python.packages import get_package_share_directory
+        import xacro
+        from scripts.task.common.run_logger import RunLog
+        from scripts.task.common.schema import validate_config
+        from scripts.task.multi_point.task import MultiPointTask
+        from scripts.task.servo_tracking.core import load_config
+        from scripts.tools.monitoring.point_panel import LocalFK
+        from scripts.tools.monitoring.point_snapshot import Capture, documents
+        root = Path(__file__).resolve().parents[1]
+        local = LocalFK(root, 'base_link', 'tcp_link')
+        capture = Capture(q=(0.,)*6, received=(1.,)*6, captured_at='fixture', monotonic=1.)
+        config = validate_config(documents(
+            capture, local.pose(capture), kinematics_sha256=local.kinematics_sha256)['joint'])
+        model_path = Path(get_package_share_directory('agx_arm_moveit'))/'config/agx_arm.urdf.xacro'
+        offset = load_config(root/'scripts/task/servo_tracking/config/config.yaml')['tcp_offset']
+        mappings = {'arm_type': 'piper_l', 'effector_type': 'none',
+                    'tcp_offset_xyz': ' '.join(map(str, offset[:3])),
+                    'tcp_offset_rpy': ' '.join(map(str, offset[3:]))}
+        with tempfile.TemporaryDirectory() as temp:
+            client = self.client()
+            client.urdf = xacro.process_file(str(model_path), mappings=mappings).toxml()
+            task = MultiPointTask(client, config, {'enabled': False, 'objects': []}, RunLog(temp))
+            self.assertTrue(task.run()['success'])
+            mappings['tcp_offset_xyz'] = ' '.join(map(str, (offset[0]+.05, *offset[1:3])))
+            client.urdf = xacro.process_file(str(model_path), mappings=mappings).toxml()
+            client.starts.clear()
+            with self.assertRaisesRegex(RuntimeError, 'different robot model/TCP'):
+                task.run()
+            self.assertEqual(client.starts, [])
+
     def client(self,fail=False):
         from scripts.task.common.schema import JOINTS
         class Client:
@@ -127,7 +160,7 @@ class TaskMessageTests(unittest.TestCase):
             self.assertEqual(client.stops,1)
             self.assertEqual(len(client.starts),2)
 
-    def test_failed_pose_preserves_resolved_initial_orientation_and_error(self):
+    def test_failed_pose_preserves_resolved_rpy_orientation_and_error(self):
         import json
         from unittest.mock import Mock
         from moveit_msgs.msg import MoveItErrorCodes
@@ -137,7 +170,7 @@ class TaskMessageTests(unittest.TestCase):
         from scripts.task.common.schema import validate_config
         config=validate_config({'points':[
             dict(name='a',type='joint',joints_rad=[0.1]*6),
-            dict(name='b',type='pose',position_m=[.05,.2,.79],orientation='initial')]})
+            dict(name='b',type='pose',position_m=[.05,.2,.79],rpy=[90.,90.,0.])]})
         with tempfile.TemporaryDirectory() as temp:
             client=self.client()
             original_plan=client.plan
@@ -148,20 +181,20 @@ class TaskMessageTests(unittest.TestCase):
             client.plan=Mock(side_effect=plan)
             log=RunLog(temp)
             task=MultiPointTask(client,config,{},log)
-            with self.assertRaisesRegex(RuntimeError,'第 2/2 点 b 规划失败.*FAILURE.*本轮开始'):
+            with self.assertRaisesRegex(RuntimeError,'第 2/2 点 b 规划失败.*FAILURE'):
                 task.run()
             failure=json.loads((log.directory/'planning_failure.json').read_text())
-            self.assertEqual(failure['point']['orientation_xyzw'],[0.,0.,0.,1.])
-            self.assertNotIn('orientation',failure['point'])
+            for actual, expected in zip(failure['point']['orientation_xyzw'], [.5,.5,-.5,.5]):
+                self.assertAlmostEqual(actual, expected)
+            self.assertNotIn('rpy',failure['point'])
             self.assertEqual(failure['start_joints_rad'],[.1]*6)
             self.assertEqual(failure['moveit_error'],dict(code=99999,name='FAILURE',source='OMPL',message='test goal failure'))
-            self.assertEqual(failure['orientation_source'],'round_initial')
             self.assertTrue((log.directory/'002_scene.json').exists())
             self.assertEqual(json.loads((log.directory/'002_request.json').read_text())['point'],failure['point'])
             self.assertEqual(json.loads((log.directory/'resolved_points.json').read_text())[1],failure['point'])
             self.assertEqual(json.loads((log.directory/'initial_pose.json').read_text()),client.fk())
             self.assertEqual(json.loads((log.directory/'result.json').read_text())['planning_failure'],failure)
-            self.assertEqual(config['points'][1]['orientation'],'initial')
+            self.assertEqual(config['points'][1]['orientation_xyzw'], failure['point']['orientation_xyzw'])
             self.assertIsNone(task.reviewed_plan)
             self.assertIsNone(client.preview)
             self.assertEqual(client.executions,0)

@@ -1,15 +1,20 @@
 """Backend permit, selection and stop regressions without ROS init or hardware."""
+import json
 import time
 from types import MethodType, SimpleNamespace as NS
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
+import numpy as np
 from piper_servo_tracking.msg import GamepadInput
+from piper_servo_tracking.srv import SelectGamepadControl
+from scripts.task.servo_tracking.core import RobotModel, joint_speed_limits, load_config, pose_error
 from scripts.task.servo_tracking.gamepad_backend import GamepadBackend
 from scripts.tools.gamepad_control.core import (
-    ControlSelection, ControlState, InputFrame, InputGate, VelocityIntentFilter,
+    CARTESIAN_AXES, ControlSelection, ControlState, InputFrame, InputGate, VelocityIntentFilter,
 )
 from scripts.tools.gamepad_control.settings import load_tool_config
+from tests.test_servo_tracking import CONFIG, URDF
 
 
 def backend(phase='ARMED'):
@@ -121,28 +126,29 @@ class GamepadBackendSelectionTests(unittest.TestCase):
         self.assertEqual((state.selection.joint_index, state.selection.revision), (6, revision))
 
     def test_active_navigation_does_not_select_and_cartesian_dpad_is_not_navigation(self):
-        for phase, mode in (('ACTIVE', 'single_axis'), ('ARMED', 'cartesian')):
+        for phase, mode in (('ACTIVE', 'single_axis'), ('ACTIVE', 'cartesian_axis'), ('ARMED', 'cartesian')):
             state = backend(phase); state.selection.select(mode, 1)
             state._begin_prepare = Mock()
             state.on_input(message(dpad=(0, 0, 0, 1), lb=phase == 'ACTIVE'))
-            self.assertEqual(state.selection.joint_index, 1)
+            self.assertEqual(state.selection.axis_index, 1)
 
-    def test_four_directions_follow_the_two_by_three_joint_grid(self):
-        # Each row lists the resulting joint for up, down, left and right.
+    def test_four_directions_follow_both_two_by_three_grids(self):
+        # Each row lists the resulting axis for up, down, left and right.
         neighbors = ((1, 4, 1, 2), (2, 5, 1, 3), (3, 6, 2, 3),
                      (1, 4, 4, 5), (2, 5, 4, 6), (3, 6, 5, 6))
-        for joint, targets in enumerate(neighbors, 1):
-            for direction, target in enumerate(targets):
-                with self.subTest(joint=joint, direction=direction):
-                    state = backend()
-                    state.selection.select('single_axis', joint)
-                    revision = state.selection.revision
-                    dpad = [0] * 4
-                    dpad[direction] = 1
-                    for sequence in (3, 4, 5):
-                        state.on_input(message(sequence, dpad=dpad))
-                    self.assertEqual(state.selection.joint_index, target)
-                    self.assertEqual(state.selection.revision, revision + (target != joint))
+        for mode in ('single_axis', 'cartesian_axis'):
+            for axis, targets in enumerate(neighbors, 1):
+                for direction, target in enumerate(targets):
+                    with self.subTest(mode=mode, axis=axis, direction=direction):
+                        state = backend()
+                        state.selection.select(mode, axis)
+                        revision = state.selection.revision
+                        dpad = [0] * 4
+                        dpad[direction] = 1
+                        for sequence in (3, 4, 5):
+                            state.on_input(message(sequence, dpad=dpad))
+                        self.assertEqual(state.selection.axis_index, target)
+                        self.assertEqual(state.selection.revision, revision + (target != axis))
                     state._request_guard.assert_not_called()
 
     def test_diagonal_or_blocked_press_requires_a_new_press_after_release(self):
@@ -165,13 +171,87 @@ class GamepadBackendSelectionTests(unittest.TestCase):
     def test_speed_changes_only_update_current_mode_while_released_and_idle(self):
         state = backend()
         state.on_speed(NS(data=.4))
-        self.assertEqual(state.selection.speed_scales, {'single_axis': .4, 'cartesian': .2})
+        self.assertEqual(state.selection.speed_scales, {'single_axis': .4, 'cartesian': .2, 'cartesian_axis': .2})
         state.phase = 'ACTIVE'; state.on_speed(NS(data=.6))
         self.assertEqual(state.selection.speed_scale, .4)
         state.phase = 'ARMED'
         state.input = InputFrame('fixture', 1, 3, time.monotonic(), (0.,)*4, (0,)*4, True, False)
         state.on_speed(NS(data=.6))
         self.assertEqual(state.selection.speed_scale, .4)
+
+
+class GamepadCartesianAxisSimulationTests(unittest.TestCase):
+    def test_all_directions_drive_the_model_and_clear_jog_on_stick_center_and_lb_release(self):
+        model = RobotModel(URDF.read_text(), tip='link6')
+        config = load_config(CONFIG)
+        gp = load_tool_config()
+        config['joint_speed'] = min(config['joint_speed'], gp['joint_speed'])
+        config['joint_acceleration'] = min(config['joint_acceleration'], gp['joint_acceleration'])
+        dt = 1. / gp['control_rate_hz']
+        zero = (0.,)*6
+        weights = np.array([1., 1., 1., .25, .25, .25])
+        for axis, name in enumerate(CARTESIAN_AXES):
+            for sign in (1, -1):
+                with self.subTest(axis=name, sign=sign), patch('time.monotonic', return_value=100.) as clock:
+                    q = np.array(config['initial_joints'])
+                    start = model.pose(q)
+                    state = backend()
+                    state.config = state.velocity_config = config
+                    state.model = model
+                    state.feedback = NS(get=lambda timeout: q)
+                    state.guard_client = Mock()
+                    selection = SelectGamepadControl.Request(control_mode='cartesian_axis', joint_index=axis+1)
+                    self.assertTrue(state.select_control(selection, SelectGamepadControl.Response()).success)
+                    self.assertEqual(tuple(state.jog_pub.publish.call_args.args[0].velocities), zero)
+                    state.on_input(message(3, lb=True))
+                    self.assertEqual(state.phase, 'ARMED')
+                    state.guard_client.call_async.assert_not_called()
+                    clock.return_value = 100.02
+                    state.on_input(message(4))
+                    clock.return_value = 100.18
+                    state.on_input(message(5))
+                    clock.return_value = 100.20
+                    state.on_input(message(6, lb=True))
+                    self.assertEqual(state.phase, 'PREPARING')
+                    state.on_guard(NS(data=json.dumps(dict(state.guard_status, state='running', gate_closed=False))))
+                    self.assertEqual(state.phase, 'ACTIVE')
+
+                    axes = (.6, -.65*sign, .8, -.4)
+                    dpad = (0, 0, 0, 1)
+                    limits = joint_speed_limits(config, state.selection.speed_scale)
+                    for step in range(1, 41):
+                        clock.return_value = 100.20 + step*dt
+                        state.ui_seen = state.guard_seen = clock.return_value
+                        state.on_input(message(6+step, axes=axes, dpad=dpad, lb=True))
+                        state.tick()
+                        velocity = np.array(state.jog_pub.publish.call_args.args[0].velocities)
+                        self.assertTrue(np.all(np.abs(velocity) <= limits + 1e-12))
+                        q += dt * velocity
+                    self.assertEqual(state.phase, 'ACTIVE')
+                    self.assertEqual(state.selection.cartesian_axis_index, axis+1)
+                    for intent in (state.requested_tcp_velocity, state.filtered_tcp_velocity):
+                        self.assertGreater(sign * intent[axis], 0.)
+                        self.assertEqual(sum(component != 0. for component in intent), 1)
+                    linear, angular = pose_error(model.pose(q), start)
+                    delta = weights * np.r_[linear, angular]
+                    self.assertGreater(sign * delta[axis], 2e-5)
+                    self.assertGreater(sign * delta[axis] / np.linalg.norm(delta), .95)
+
+                    state.on_input(message(47, axes=(.6, 0., .8, -.4), dpad=dpad, lb=True))
+                    state.tick()
+                    self.assertEqual(state.phase, 'ACTIVE')
+                    self.assertEqual(state.filtered_tcp_velocity, zero)
+                    self.assertEqual(tuple(state.jog_pub.publish.call_args.args[0].velocities), zero)
+                    clock.return_value += dt
+                    state.on_input(message(48, axes=axes, lb=True))
+                    state.tick()
+                    clock.return_value += dt
+                    state.on_input(message(49, axes=axes, lb=True))
+                    state.tick()
+                    self.assertNotEqual(tuple(state.jog_pub.publish.call_args.args[0].velocities), zero)
+                    state.on_input(message(50, axes=axes, lb=False))
+                    self.assertEqual((state.phase, state.after_stop), ('STOPPING', 'ARMED'))
+                    self.assertEqual(tuple(state.jog_pub.publish.call_args.args[0].velocities), zero)
 
 
 class GamepadBackendStopTests(unittest.TestCase):

@@ -50,7 +50,7 @@ CAN 连接、机械臂使能和阻尼急停统一在控制面板操作。本任�
 
 任务配置集中放在本任务的 `config/` 目录：`config/config.yaml` 为默认点位，`config/config_0.yaml` 为已有点位变体，`config/scene.yaml` 为可选障碍物。一次性模式未指定 `--config` 时读取 `config/config.yaml`；交互模式未指定时仍等待用户加载。外部自定义配置路径继续受支持，点位内容和执行顺序保持原样。
 
-从[监控工具](../../tools/monitoring/README.md)冻结/保存点位，复制到 `points`；关节和笛卡尔快照是同一姿态的两种表达，通常选择一种。
+可将监控工具的关节点位或笛卡尔位姿条目复制到 `points`。同一列表可混用关节点和位姿点。见[监控工具](../../tools/monitoring/README.md)。
 
 以下数值仅说明格式：
 
@@ -72,14 +72,22 @@ points:
     frame_id: base_link
     position_m: [0.2, 0.1, 0.3]
     orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+  - name: point_c
+    type: pose
+    frame_id: base_link
+    position_m: [0.2, 0.1, 0.35]
+    rpy: [0.0, 30.0, -15.0]
 ```
 
-- `joints_rad`：joint1～joint6，弧度；`position_m`：米。
-- `orientation_xyzw`：单位四元数 `[x,y,z,w]`，无单位；可改为 `orientation: initial`，保持本轮开始时的姿态，二选一。
-- `orientation: initial` 取点击规划后采样的本轮真实起点朝向，**不是上一目标点的朝向**，也不是忽略姿态约束。同一位置换一个朝向可能无法规划；如果只想保持上一点的目标姿态，应复制上一点的 `orientation_xyzw`。
+- 关节点使用 `joints_rad`，按 joint1～joint6 排列，单位为弧度。
+- 位姿点的 `position_m` 按 `[X, Y, Z]` 排列，单位为米。朝向至少填 `orientation_xyzw` 或 `rpy` 中的一项。
+- `orientation_xyzw` 是单位四元数 `[qx, qy, qz, qw]`。`rpy` 按 `[Roll, Pitch, Yaw]` 排列，单位为度，采用固定轴旋转 `Rz(Yaw) · Ry(Pitch) · Rx(Roll)`。
+- 只填 `rpy` 时，任务加载时将它转换为四元数。两项都填时，实际旋转角差在 0.001° 以内采用给定的四元数，超过时配置加载会报告点名和角差。
 - 名称在同一任务内必须唯一；按列表顺序执行，不按名称编号排序。
 - 每点可单独设置 `hold_seconds`。`return_to_initial: true` 返回本轮开始时的位置；启用时 `return_to_initial` 为自动返回点保留名称，用户点位不能同名。
 - 单独复制条目不会复制快照模型指纹，需保证模型、参考系和 TCP 一致。
+
+旧点位若使用六项 `xyzrpy`，可把前三项填入 `position_m`、后三项填入 `rpy`。曾使用 `orientation: initial` 的自定义点位需要填写明确的目标朝向。
 
 ### 多行写法与监控中的紧凑写法
 
@@ -89,6 +97,7 @@ points:
 points:
   - {name: point_a, type: joint, joints_rad: [0.0, 0.2, -0.5, 0.0, 0.3, 0.0]}
   - {name: point_b, type: pose, frame_id: base_link, position_m: [0.2, 0.1, 0.3], orientation_xyzw: [0.0, 0.0, 0.0, 1.0]}
+  - {name: point_c, type: pose, frame_id: base_link, position_m: [0.2, 0.1, 0.35], rpy: [0.0, 30.0, -15.0]}
 ```
 
 多行写法用换行和缩进分隔字段；紧凑写法用 `{}` 包住字段，字段间加逗号。两种写法中的数值列表均可用 `[]`，数字间加逗号。
@@ -144,7 +153,7 @@ bash scripts/piperl/run.sh --python-only python scripts/task/multi_point/run.py 
 
 出现 `PLANNING` 后失败表示规划阶段失败，配置可能已经加载成功。错误会指出第几个点及其名称。`99999 (FAILURE)` 是 MoveIt 通用失败码，单凭该码不能断定碰撞或逆解无解；查看会话的 `official_stack.log`（复用外部 MoveIt 时查看其启动终端）。若提示 `Unable to sample any valid states for goal tree`，表示本次未采到满足目标的有效状态，应核对完整位置、朝向、模型/TCP、限位和碰撞场景。
 
-每轮 `initial_pose.json` 保存初始 TCP 位姿，`resolved_points.json` 保存应用偏移并展开 `orientation: initial` 后的目标；`NNN_request.json` 和 `NNN_scene.json` 保存每次规划的起点、目标与场景。失败时另存 `planning_failure.json`，包含失败点、起点及 MoveIt 返回的错误码/消息（如有）。失败预览不可执行，不会自动跳过目标或放宽约束。
+每轮 `initial_pose.json` 保存初始 TCP 位姿，`resolved_points.json` 保存应用偏移后的目标位姿。日志中的位姿使用米制位置和四元数。`NNN_request.json` 和 `NNN_scene.json` 保存每次规划的起点、目标与场景。失败时另存 `planning_failure.json`，包含失败点、起点及 MoveIt 返回的错误码和消息（如有）。失败预览不可执行，不会自动跳过目标或放宽约束。
 
 执行异常时优先取消动作并关闭控制门，再记录失败；日志写入失败不会跳过停止处理。异常退出会尝试更新各段记录和总结果；磁盘不可写时错误输出到终端，原始任务异常仍保留。
 

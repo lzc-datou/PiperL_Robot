@@ -4,6 +4,7 @@ import time
 from scripts.task.common.planning_scene import fingerprint
 from scripts.task.common.joint_bounds import JointBoundsError, StartStateBoundsError
 from scripts.task.common.robot_feedback import FeedbackUnavailableError
+from scripts.task.common.schema import validate_snapshot_model
 from rosidl_runtime_py.convert import message_to_ordereddict
 
 class MultiPointTask:
@@ -20,9 +21,8 @@ class MultiPointTask:
         self.log.write('scene_config.yaml',self.scene)
         try:
             self.client.tick()
-            capture=self.config.get('capture',{})
-            if capture.get('model_sha256') and capture['model_sha256']!=self.client.model_sha256:
-                raise RuntimeError('Snapshot was recorded with a different robot model/TCP; re-record or explicitly review configuration')
+            if 'capture' in self.config:
+                validate_snapshot_model(self.config,self.client.urdf,self.client.model_sha256)
             if reviewed is not None:
                 if not self.execute or reviewed['config']!=self.config:
                     raise RuntimeError('Reviewed plan does not match execution configuration; replan')
@@ -59,9 +59,6 @@ class MultiPointTask:
                 for point in points:
                     if point['type']=='pose':
                         point['position_m']=[a+b for a,b in zip(point['position_m'],settings['approach_offset_m'])]
-                        if point.get('orientation')=='initial':
-                            point.pop('orientation')
-                            point['orientation_xyzw']=initial_pose['orientation_xyzw']
                 if settings['return_to_initial']:
                     points.append(dict(name='return_to_initial',type='joint',joints_rad=list(initial.q),hold_seconds=0))
             self.log.write('resolved_points.json',points)
@@ -94,14 +91,9 @@ class MultiPointTask:
                         failure=dict(attempt,error=f'{type(exc).__name__}: {exc}')
                         if hasattr(exc,'details'):
                             failure['moveit_error']=deepcopy(exc.details)
-                        configured=next((p for p in self.config['points'] if p['name']==point['name']),{})
-                        hint=''
-                        if configured.get('orientation')=='initial':
-                            failure['orientation_source']='round_initial'
-                            hint='；orientation: initial 使用本轮开始时的朝向，不是上一点朝向；请核对该位置与朝向组合'
                         result['planning_failure']=failure
                         self.log.write('planning_failure.json',failure)
-                        raise RuntimeError(f'第 {index}/{len(points)} 点 {point["name"]} 规划失败：{exc}{hint}') from exc
+                        raise RuntimeError(f'第 {index}/{len(points)} 点 {point["name"]} 规划失败：{exc}') from exc
                     finally:
                         diagnostics=getattr(self.client,'planning_diagnostics',None)
                         if diagnostics is not None:

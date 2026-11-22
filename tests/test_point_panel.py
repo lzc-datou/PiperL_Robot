@@ -3,14 +3,16 @@ import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+import yaml
+from scripts.task.common.schema import load_config
 from scripts.tools.monitoring.point_panel import PointPanel
-from scripts.tools.monitoring.read_joint_angles import JointFeedback
+from scripts.tools.monitoring.read_joint_angles import JointFeedback, ROOT
 
 class PointPanelTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         with patch('scripts.tools.monitoring.point_panel.ReadOnlyFK',side_effect=ImportError('no ROS')),patch('sys.stdin.isatty',return_value=False):
-            self.panel=PointPanel(Path(self.temp.name),snapshot_dir=Path(self.temp.name)/'points')
+            self.panel=PointPanel(Path(self.temp.name),snapshot_dir=Path(self.temp.name)/'points',fk_source='moveit')
         self.addCleanup(self.panel.close)
         self.panel.keys=lambda:''
         self.feedback=JointFeedback()
@@ -73,5 +75,48 @@ class PointPanelTests(unittest.TestCase):
         good=self.render(now+.5)
         self.assertNotIn('Position feedback stale',good)
         self.assertIn(saved,good)
+
+    def test_local_fk_freezes_one_cartesian_pose_and_saves_both_orientations(self):
+        with patch('sys.stdin.isatty', return_value=False):
+            local_panel = PointPanel(ROOT, snapshot_dir=Path(self.temp.name)/'points')
+        self.addCleanup(local_panel.close)
+        self.panel = local_panel
+        now = time.monotonic()
+        self.feedback.degrees = [0.]*6
+        for offset in (0., .1, .2, .31):
+            self.render(now+offset)
+        frozen = self.render(now+.33, 'p')
+        self.assertIn('FROZEN', frozen)
+        self.assertIn('position_m: [0.073061, 0.000000, 0.227595]', frozen)
+        self.assertRegex(frozen, r'orientation_xyzw: \[[^\n]+\],\n +rpy: \[')
+        self.assertEqual(frozen.count('type: pose'), 1)
+        self.assertNotIn('XYZ (mm)', frozen)
+        self.assertNotIn('xyzrpy:', frozen)
+        self.feedback.degrees[0] = 25.
+        saved = self.render(now+.43, 's')
+        self.assertIn('position_m: [0.073061, 0.000000, 0.227595]', saved)
+        directory, = local_panel.directory.iterdir()
+        self.assertEqual({path.name for path in directory.iterdir()}, {'joint.yaml', 'pose.yaml'})
+        joint = yaml.safe_load((directory/'joint.yaml').read_text())
+        pose = yaml.safe_load((directory/'pose.yaml').read_text())
+        self.assertEqual(joint['capture'], pose['capture'])
+        self.assertEqual(joint['points'][0]['joints_rad'], [0.]*6)
+        self.assertEqual(joint['capture']['kinematics_sha256'], local_panel.local_fk.kinematics_sha256)
+        self.assertAlmostEqual(pose['points'][0]['position_m'][0], .07306107)
+        self.assertAlmostEqual(pose['points'][0]['rpy'][1], 85., places=4)
+        goal = load_config(directory/'pose.yaml')['points'][0]
+        self.assertEqual(goal['position_m'], pose['points'][0]['position_m'])
+        local_panel.keys = lambda: 'r'
+        self.feedback.received_at = [now-2] * 6
+        expired = local_panel.render(self.feedback, now+.53, .5)
+        self.assertIn('Position feedback stale', expired)
+        self.assertNotIn('rpy:', expired)
+        self.assertNotIn('orientation_xyzw:', expired)
+        resume = self.render(now+.63)
+        self.assertIn('LIVE', resume)
+        self.assertIn('rpy:', resume)
+        self.assertIn('orientation_xyzw:', resume)
+        self.assertNotIn('Position feedback stale', resume)
+        self.assertNotIn('position_m: [0.073061, 0.000000, 0.227595]', resume)
 
 if __name__=='__main__':unittest.main()

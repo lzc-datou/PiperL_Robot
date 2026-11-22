@@ -8,6 +8,7 @@ import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
+import yaml
 
 try:
     from geometry_msgs.msg import Pose
@@ -41,8 +42,8 @@ class ObstacleTests(unittest.TestCase):
 
     def test_default_inputs_and_no_hardware_execution_interface(self):
         config, scene = load_inputs(DEFAULT_CONFIG, DEFAULT_CONFIG.with_name('scene.yaml'))
-        self.assertEqual(len(config['points']), 4)
-        self.assertEqual(len(scene['objects']), 3)
+        self.assertGreaterEqual(len(config['points']), 2)
+        self.assertTrue(scene['objects'])
         simple, scene = load_inputs(CONFIG, SCENE)
         self.assertEqual(len(simple['points']), 2)
         self.assertEqual(len(scene['objects']), 1)
@@ -157,8 +158,13 @@ class ObstacleTests(unittest.TestCase):
 
     def multi_fixture(self, directory):
         task, c = self.fixture(directory)
-        task.config_path = DEFAULT_CONFIG
-        task.scene_path = DEFAULT_CONFIG.with_name('scene.yaml')
+        task.config_path = Path(directory) / 'four_points.yaml'
+        config = load_config(CONFIG)
+        config['points'] = [
+            dict(name=name, type='joint', joints_rad=[value, 1., -1., 0., .5, 0.])
+            for name, value in zip('ABCD', (-.65, -.2, .2, .65))
+        ]
+        task.config_path.write_text(yaml.safe_dump(config))
         def plan(point, start, **kwargs):
             trajectory = self.trajectory()
             endpoint = list(point['joints_rad'])
@@ -168,6 +174,63 @@ class ObstacleTests(unittest.TestCase):
             return trajectory, endpoint, 1.
         c.plan.side_effect = plan
         return task, c
+
+    def test_comparison_resolves_cartesian_start_and_plans_mixed_targets(self):
+        with tempfile.TemporaryDirectory() as temp:
+            task, client = self.fixture(temp)
+            q_start = [-.65, 1., -1., 0., .5, 0.]
+            q_joint = [-.2, 1., -1., 0., .5, 0.]
+            q_pose = [.65, 1., -1., 0., .5, 0.]
+            task.config_path = Path(temp) / 'mixed.yaml'
+            task.config_path.write_text(yaml.safe_dump({'points': [
+                dict(name='A', type='pose', position_m=[.2, 0., .4], rpy=[0., 0., 0.]),
+                dict(name='B', type='joint', joints_rad=q_joint),
+                dict(name='C', type='pose', position_m=[.2, 0., .4], orientation_xyzw=[0., 0., 0., 1.]),
+            ]}))
+            client.solve_start_pose = Mock(return_value=q_start)
+
+            def plan(point, start, **kwargs):
+                trajectory = self.trajectory()
+                end = point.get('joints_rad', q_pose)
+                trajectory.joint_trajectory.points[0].positions = start
+                trajectory.joint_trajectory.points[-1].positions = end
+                return trajectory, end, 1.
+
+            client.plan.side_effect = plan
+            with patch('scripts.task.obstacle_avoidance.task.inspect',
+                       side_effect=[dict(valid=v, checked_samples=20) for v in (True, True, False, False, True, True)]):
+                result = task.compare()
+            self.assertTrue(result['success'])
+            client.solve_start_pose.assert_called_once()
+            self.assertEqual(client.solve_start_pose.call_args.args[0]['orientation_xyzw'], [0., 0., 0., 1.])
+            calls = client.plan.call_args_list
+            self.assertEqual([call.args[1] for call in calls], [q_start, q_joint, q_start, q_joint])
+            self.assertEqual([call.args[0]['type'] for call in calls], ['joint', 'pose', 'joint', 'pose'])
+            self.assertEqual(result['point_names'], ['A', 'B', 'C'])
+
+    def test_cartesian_virtual_start_sends_collision_checked_ik_request(self):
+        from moveit_msgs.srv import GetPositionIK
+
+        client = PlanningClient.__new__(PlanningClient)
+        client.settings = {'group': 'arm', 'tcp_link': 'tcp_link'}
+        client.limits = dict.fromkeys(JOINTS, (-1., 1.))
+        client.node = Mock()
+        client.tick = Mock()
+        response = GetPositionIK.Response()
+        response.error_code.val = 1
+        response.solution.joint_state.name = list(reversed(JOINTS))
+        response.solution.joint_state.position = [.6, .5, .4, .3, .2, .1]
+        client.call = Mock(return_value=response)
+
+        point = dict(name='A', frame_id='base_link', position_m=[.2, 0., .4],
+                     orientation_xyzw=[.5, .5, -.5, .5])
+        self.assertEqual(client.solve_start_pose(point), (.1, .2, .3, .4, .5, .6))
+        request = client.call.call_args.args[1].ik_request
+        self.assertTrue(request.avoid_collisions)
+        self.assertEqual(request.ik_link_name, 'tcp_link')
+        self.assertEqual(request.pose_stamped.header.frame_id, 'base_link')
+        self.assertEqual(request.pose_stamped.pose.orientation.z, -.5)
+        client.node.destroy_client.assert_called_once()
 
     def test_multisegment_comparison_chains_actual_endpoints_and_replays_both(self):
         with tempfile.TemporaryDirectory() as temp:

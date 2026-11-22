@@ -112,7 +112,9 @@ bash scripts/tools/handeye_calibration/run.sh preview
 
 一键 `preview` 默认使用 640×480@30 的彩色流。需要同时查看深度时可用 `preview --with-depth`。单独启动 `camera` 时默认同时开启彩色和深度。多台 RealSense 同时连接时，可在配置中填写这台 D405 的 `camera_serial`。
 
-视觉伺服使用 `bash scripts/tools/handeye_calibration/run.sh preview --tracking`。第一次看见棋盘时，检测器用 OpenCV SB 搜索完整棋盘。连续帧用双向金字塔光流在原图上定位全部内角点，检查每个角点周围的黑白格，再用当前曝光的角点重新解算位姿。快速移板、丢点或位姿检验失败时，当帧最多做一次整板搜索。640×480 图像通常先以 ¾ 分辨率搜索，失败后在下一张图用原分辨率重试。跟踪叠图按需独立刷新，最高 10 Hz；位姿可随每帧有效观测发布。
+视觉伺服使用 `bash scripts/tools/handeye_calibration/run.sh preview --tracking`。连续帧优先用双向光流跟踪棋盘内角点，再用近期棋盘区域恢复识别。搜索失败时，独立线程从最新待检帧用 OpenCV SB 搜索完整棋盘，两次搜索启动间隔至少 75 ms，交替使用 ¾ 和原分辨率。整图结果沿用其原始曝光时间。曝光超过 150 ms 的有效角点可作为后续光流的种子，后续帧需重新通过棋盘和位姿检查后才能发布。跟踪叠图独立刷新，最高 10 Hz。
+
+`marker.log` 的检测分类包含 `roi` 局部恢复、`grid_missing` 缺少完整棋盘和 `pose_invalid` 位姿检查失败。配对中断和检测结果中断分别记录为 `input_interrupted` 和 `result_interrupted`。跟踪检测器在位姿话题下的 `camera_info` 子话题提供当前彩色流内参和畸变，供视觉后端预测纠倾时的视野余量。
 
 手眼标定采样使用普通 `preview`，逐帧在原分辨率搜索。已有预览时，先退出旧进程再切换。跟踪预览使用同帧 D405 元数据，将设备读出时刻与主机内核帧时钟对齐，并扣除曝光偏移。分开启动时使用 `camera --color-only --tracking`、`marker --tracking` 和 `view`。
 

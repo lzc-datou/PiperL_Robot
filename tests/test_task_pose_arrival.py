@@ -5,7 +5,7 @@ from unittest.mock import Mock,patch
 import unittest
 try:
     from scripts.task.common.moveit_client import MoveItClient
-    from scripts.task.common.schema import DEFAULTS,JOINTS
+    from scripts.task.common.schema import DEFAULTS,JOINTS,validate_config
     from scripts.task.common.robot_feedback import Sample
     ROS=True
 except ImportError:
@@ -37,6 +37,44 @@ class PoseArrivalTests(unittest.TestCase):
         self.assertEqual(c.settings['position_tolerance_m'],.003)
         self.assertEqual(c.settings['orientation_tolerance_rad'],.02)
         c.publish_plan.assert_not_called()
+
+    def test_both_task_planners_receive_equivalent_pose_formats(self):
+        from moveit_msgs.msg import PlanningScene, RobotTrajectory
+        from trajectory_msgs.msg import JointTrajectoryPoint
+        from scripts.task.obstacle_avoidance.control_client import ObstacleControlClient
+
+        position = [.2, -.1, .3]
+        quaternion = [.5, .5, -.5, .5]
+        points = validate_config({'points': [
+            dict(name='quat', type='pose', position_m=position, orientation_xyzw=quaternion),
+            dict(name='rpy', type='pose', position_m=position, rpy=[90, 90, 0]),
+            dict(name='both', type='pose', position_m=position, orientation_xyzw=quaternion, rpy=[90.0001, 90, 0]),
+        ]})['points']
+        trajectory = RobotTrajectory()
+        trajectory.joint_trajectory.joint_names = JOINTS
+        trajectory.joint_trajectory.points = [JointTrajectoryPoint(positions=[0.] * 6)]
+        for client_type in (MoveItClient, ObstacleControlClient):
+            with self.subTest(client=client_type.__name__):
+                client = client_type.__new__(client_type)
+                client.settings = dict(DEFAULTS)
+                client.tick = Mock()
+                client.check_state = Mock()
+                client.check_joints = Mock()
+                client.scene = SimpleNamespace(get=Mock(return_value=PlanningScene()))
+                client.planning = object()
+                client.call = Mock(return_value=SimpleNamespace(motion_plan_response=SimpleNamespace(
+                    error_code=SimpleNamespace(val=1), trajectory=trajectory)))
+                with patch('scripts.task.obstacle_avoidance.control_client.inspect', return_value={'valid': True}):
+                    for point in points:
+                        client.plan(point, [0.] * 6, publish=False)
+                goals = [call.args[1].motion_plan_request.goal_constraints[0] for call in client.call.call_args_list]
+                for goal in goals:
+                    self.assertEqual(goal.position_constraints, goals[0].position_constraints)
+                    orientation = goal.orientation_constraints[0]
+                    self.assertEqual(orientation.link_name, 'tcp_link')
+                    self.assertEqual(orientation.header.frame_id, 'base_link')
+                    for field, expected in zip('xyzw', quaternion):
+                        self.assertAlmostEqual(getattr(orientation.orientation, field), expected, places=14)
 
     def fixture(self,errors,angles=None):
         clock=[0.0];seen=[]

@@ -2,7 +2,7 @@
 import threading
 from geometry_msgs.msg import Point
 from moveit_msgs.msg import DisplayTrajectory
-from moveit_msgs.srv import GetMotionPlan, GetStateValidity
+from moveit_msgs.srv import GetMotionPlan, GetPositionIK, GetStateValidity
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import JointState
 from visualization_msgs.msg import Marker, MarkerArray
@@ -28,7 +28,7 @@ class PlanningClient(RosContext):
         self.settings = settings
         self.cancel_requested = threading.Event()
         self.limits = {}
-        self.start = tuple(start)
+        self.start = None if start is None else tuple(start)
         self.planning = self.node.create_client(GetMotionPlan, '/plan_kinematic_path')
         self.validity = self.node.create_client(GetStateValidity, '/check_state_validity')
         self.scene = PlanningScene(self, prefix='obstacle_avoidance/')
@@ -45,7 +45,10 @@ class PlanningClient(RosContext):
             raise InterruptedError('演示已取消')
 
     def publish_start(self):
-        msg = JointState(name=list(JOINTS), position=list(self.start))
+        start = self.start
+        if start is None:
+            return
+        msg = JointState(name=list(JOINTS), position=list(start))
         msg.header.stamp = self.node.get_clock().now().to_msg()
         self.joints.publish(msg)
 
@@ -53,6 +56,36 @@ class PlanningClient(RosContext):
         self.check_joints(q)
         request = GetStateValidity.Request(group_name=self.settings['group'], robot_state=robot_state(q))
         return self.call(self.validity, request, tick=self.tick)
+
+    def solve_start_pose(self, point):
+        """Choose one virtual joint start for both paths through this TCP pose."""
+        seed = [min(max(0.0, lower), upper) for lower, upper in (self.limits[name] for name in JOINTS)]
+        target = GetPositionIK.Request()
+        request = target.ik_request
+        request.group_name = self.settings['group']
+        request.ik_link_name = self.settings['tcp_link']
+        request.robot_state = robot_state(seed)
+        request.avoid_collisions = True
+        request.timeout.sec = 1
+        request.pose_stamped.header.frame_id = point['frame_id']
+        pose = request.pose_stamped.pose
+        pose.position.x, pose.position.y, pose.position.z = point['position_m']
+        pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w = point['orientation_xyzw']
+        service = self.node.create_client(GetPositionIK, '/compute_ik')
+        try:
+            response = self.call(service, target, tick=self.tick)
+        finally:
+            self.node.destroy_client(service)
+        if response.error_code.val != 1:
+            raise RuntimeError(f'{point["name"]}: 虚拟起点逆解失败，MoveIt {response.error_code.val}')
+        state = response.solution.joint_state
+        try:
+            values = dict(zip(state.name, state.position, strict=True))
+            start = tuple(values[name] for name in JOINTS)
+        except (KeyError, ValueError) as exc:
+            raise RuntimeError(f'{point["name"]}: 虚拟起点逆解缺少有效的六轴关节数据') from exc
+        self.check_joints(start)
+        return start
 
     def clear_preview(self):
         self.preview_message = None

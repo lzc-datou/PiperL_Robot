@@ -110,7 +110,8 @@ bash scripts/piperl/run.sh python scripts/task/obstacle_avoidance/run.py \
   --scene scripts/task/obstacle_avoidance/config/scene_simple.yaml
 ```
 
-- 点位至少两个，均为 `type: joint`，`joints_rad` 按 joint1～joint6 排列，单位 rad；按列表顺序访问，支持自定义名称。
+- 点位按列表顺序访问，可混用关节点和位姿点。位姿点使用米制 `position_m`，朝向可填写 `orientation_xyzw`、度制 `rpy: [Roll, Pitch, Yaw]`，或同时填写两项。两项吻合时采用四元数。详细字段与示例见[多点任务点位配置](../multi_point/README.md#点位配置)。
+- 交互入口从实测关节状态出发。纯虚拟对比需要至少两个点，以第一个点作为虚拟起点。若它是笛卡尔点，MoveIt 先求出一组六轴关节角，两条路径从这一组关节角出发。
 - 两份随附点位配置的 `velocity_scaling`、`acceleration_scaling` 都是 **0.15**；多点任务随附配置是 **0.30**。字段省略时解析器缺省为 0.10，实际以加载的配置为准。
 - 障碍物支持 box `[长,宽,高]`、sphere `[半径]`、cylinder `[高度,半径]`，位置单位 m，坐标系须与配置一致，默认 `base_link`。
 - 默认规划时各侧增加 0.025 m 留边；最终显示、碰撞复查使用原始障碍物。可用 `--clearance 0.03` 调整。

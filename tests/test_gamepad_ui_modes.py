@@ -60,7 +60,8 @@ class GamepadUiModeTests(unittest.TestCase):
         self.application.processEvents()
 
     def assert_selection_enabled(self, enabled):
-        for button in (*self.window.mode_buttons.values(), *self.window.joint_buttons):
+        for button in (*self.window.mode_buttons.values(), *self.window.joint_buttons,
+                       *self.window.cartesian_axis_buttons):
             self.assertEqual(button.isEnabled(), enabled, button.text())
 
     def test_single_axis_tiles_show_all_angles_and_confirmed_selection(self):
@@ -160,6 +161,36 @@ class GamepadUiModeTests(unittest.TestCase):
         self.assertEqual(self.window.feedback_state.text(), '反馈中断')
         self.assertTrue(all(v.text() == '—' for v in self.window.pose_values + self.window.joint_values))
 
+    def test_cartesian_axis_tiles_follow_backend_axis_and_mouse_requests(self):
+        self.window.mode_buttons['cartesian_axis'].click()
+        self.assertEqual(self.bridge.selections, [('cartesian_axis', 1)])
+        self.assertEqual(self.window.control_mode, 'single_axis')
+        self.bridge.complete_selection()
+        self.refresh(control_mode='cartesian_axis', selected_joint=3, selected_cartesian_axis=1)
+        self.assertTrue(self.window.mode_buttons['cartesian_axis'].isChecked())
+        self.assertEqual(self.window.selected_joint, 3)
+        self.assertTrue(self.window.cartesian_axis_buttons[0].isChecked())
+        self.assertEqual([v.text() for v in self.window.cartesian_axis_values],
+                         ['250.0', '0.0', '300.0', '0.0', '0.0', '0.0'])
+        self.assertTrue(self.window.mapping.single)
+        self.assertIn('X · 按住 LB', self.window.mapping.permission.text())
+        self.assertIn('60 mm/s', self.window.speed_label.toolTip())
+        tile = self.window.cartesian_axis_buttons[4]
+        reading = self.window.cartesian_axis_values[4]
+        point = reading.mapTo(tile, reading.rect().center())
+        self.assertIs(self.window.childAt(tile.mapTo(self.window, point)), tile)
+        QtTest.QTest.mouseClick(tile, QtCore.Qt.LeftButton, pos=point)
+        self.assertEqual(self.bridge.selections[-1], ('cartesian_axis', 5))
+        self.assertFalse(tile.isChecked())
+        self.bridge.complete_selection()
+        self.refresh(selected_cartesian_axis=5)
+        self.assertTrue(tile.isChecked())
+        self.assertIn('Pitch · 按住 LB', self.window.mapping.permission.text())
+        self.assertIn('17.2°/s', self.window.speed_label.toolTip())
+        self.bridge.status['feedback']['age_s'] = 1.
+        self.refresh()
+        self.assertTrue(all(v.text() == '—' for v in self.window.cartesian_axis_values))
+
     def test_home_speed_is_separate_from_the_jog_setting(self):
         self.refresh(state='HOME_ARMING', home_hold_progress=.56)
         self.assertEqual(self.window.speed_label.text(), '10%')
@@ -193,8 +224,18 @@ class GamepadUiModeTests(unittest.TestCase):
             demo.speed.setValue(35)
             demo.mode_buttons['cartesian'].click()
             self.assertEqual(demo.speed.value(), 20)
+            demo.speed.setValue(25)
+            demo.mode_buttons['cartesian_axis'].click()
+            self.assertEqual(demo.speed.value(), 20)
+            demo.speed.setValue(15)
+            demo.cartesian_axis_buttons[5].click()
             demo.mode_buttons['single_axis'].click()
             self.assertEqual(demo.speed.value(), 35)
+            demo.mode_buttons['cartesian_axis'].click()
+            self.assertEqual(demo.speed.value(), 15)
+            self.assertEqual(demo.selected_axis_name, 'Yaw')
+            demo.mode_buttons['cartesian'].click()
+            self.assertEqual(demo.speed.value(), 25)
             demo.start.click()
             demo.stop.click()
             self.assertEqual(demo.state, 'LOCKED')
@@ -285,9 +326,10 @@ class GamepadUiModeTests(unittest.TestCase):
                 self.assertEqual([w.geometry() for w in watched], geometry)
 
     def test_mode_button_hover_leave_press_and_keyboard_follow_confirmed_mode(self):
-        single, cartesian = self.window.mode_buttons.values()
+        single, cartesian, cartesian_axis = self.window.mode_buttons.values()
         self.assertEqual(self.window.mapping.title.text(), '手柄映射')
         self.assertEqual(single.size(), cartesian.size())
+        self.assertEqual(single.size(), cartesian_axis.size())
         self.assertEqual(cartesian.cursor().shape(), QtCore.Qt.PointingHandCursor)
         def fill(button):
             return button.grab().toImage().pixelColor(12, button.height() // 2)

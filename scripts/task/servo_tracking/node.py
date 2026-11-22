@@ -448,7 +448,7 @@ class Backend(Node):
             self.settle_since, self.settle_q = 0., None
             self.valid = False
             self.reachability = '检查中'
-            if np.linalg.norm(target[:3]) > self.model.radius:
+            if getattr(self, 'visual_mode', False) is not True and np.linalg.norm(target[:3]) > self.model.radius:
                 self.reject('目标超出可达范围')
         except ValueError as exc:
             self.stop_tracking(str(exc))
@@ -887,6 +887,9 @@ class Backend(Node):
                     from scripts.task.visual_servo.geometry import joint_boundary
                     detail = ' ' + joint_boundary(q, self.model.lower, self.model.upper, self.config['joint_margin'])
                 raise ValueError('目标处于关节限位保护区' + detail)
+            if context is not None and 'max_joint_step' in context:
+                if np.max(abs(np.asarray(q)-self.ik_reference)) > context['max_joint_step']:
+                    raise ValueError('分段逆解需要切换关节分支')
             checked_target = context['target'] if context is not None else self.target
             dp, dr = pose_error(checked_target, self.model.pose(q))
             if np.linalg.norm(dp) > .003 or np.linalg.norm(dr) > .03:
@@ -904,6 +907,9 @@ class Backend(Node):
             Backend.accept_ik(self, q, revision,
                 target=checked_target, target_time=context['target_time'] if context is not None else None)
         except (ValueError, IndexError, RuntimeError) as exc:
+            handle_failure = getattr(type(self), 'handle_ik_failure', None)
+            if handle_failure is not None and handle_failure(self, str(exc), revision):
+                return
             if streaming:
                 if (self.ik_seed_index < len(self.ik_seeds) and
                         time.monotonic()-context['target_time'] < self.config['ik_timeout']):
@@ -1027,12 +1033,14 @@ class Backend(Node):
         if observer is not None:
             observer.reset()
 
-    def control_twist(self, actual):
+    def control_twist(self, actual, *, linear_feedforward=None):
         # The algorithm sees only an IK-approved target and measured FK.
         # It never receives unchecked GUI poses or outputs joint commands.
         now = time.monotonic()
         kwargs = dict(now=now, target_time=self.approved_target_time,
                       speed_scale=self.scale, feedforward_active=self.dragging)
+        if linear_feedforward is not None:
+            kwargs['linear_feedforward'] = linear_feedforward
         observer = getattr(self, 'execution_observer', None)
         if observer is not None:
             kwargs['execution_feedback'] = observer.feedback(now)

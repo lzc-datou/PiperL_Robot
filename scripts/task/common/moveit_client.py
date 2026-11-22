@@ -18,6 +18,7 @@ from rclpy.action import ActionClient
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from visualization_msgs.msg import Marker, MarkerArray
 from .schema import JOINTS
+from .pose import pose_errors
 from .robot_feedback import Feedback, StableWindow, FeedbackUnavailableError
 from .ros_context import RosContext, robot_state, model_hash
 from .planning_scene import PlanningScene
@@ -327,9 +328,7 @@ class MoveItClient(RosContext):
             if now-sample.received>self.settings['feedback_timeout']:
                 window=StableWindow(self.settings['settle_seconds'],self.settings['stable_range_rad'])
                 continue
-            distance=math.sqrt(sum((a-b)**2 for a,b in zip(pose['position_m'],point['position_m'])))
-            dot=min(1.0,abs(sum(a*b for a,b in zip(pose['orientation_xyzw'],point['orientation_xyzw']))))
-            angle=2*math.acos(dot)
+            distance,angle=pose_errors(pose,point)
             if distance>self.settings['position_tolerance_m'] or angle>self.settings['orientation_tolerance_rad']:
                 window=StableWindow(self.settings['settle_seconds'],self.settings['stable_range_rad'])
             elif window.update(sample,now,endpoint,self.settings['joint_tolerance_rad']):
@@ -383,9 +382,7 @@ class MoveItClient(RosContext):
                     self.tick(True)
                     if time.monotonic()-sample.received>self.settings['feedback_timeout']:
                         raise RuntimeError('FK sample became stale during dwell')
-                    distance=math.dist(pose['position_m'],point['position_m'])
-                    dot=min(1.0,abs(sum(a*b for a,b in zip(pose['orientation_xyzw'],point['orientation_xyzw']))))
-                    angle=2*math.acos(dot)
+                    distance,angle=pose_errors(pose,point)
                     if distance>self.settings['position_tolerance_m'] or angle>self.settings['orientation_tolerance_rad']:
                         raise RuntimeError(f'{point["name"]}: TCP drifted during dwell: distance={distance}, angle={angle}')
             time.sleep(0.02)

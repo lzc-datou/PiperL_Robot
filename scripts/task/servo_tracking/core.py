@@ -1,4 +1,6 @@
 """ROS-independent geometry and validation. No device I/O or joint interpolation."""
+import hashlib
+import json
 import math
 import time
 import xml.etree.ElementTree as ET
@@ -251,6 +253,16 @@ class RobotModel:
     def pose(self, q):
         result = self.transforms(vector(q, 6))[0]
         return np.r_[result[:3, 3], Rotation.from_matrix(result[:3, :3]).as_quat()]
+
+    def kinematics_sha256(self):
+        """Identify the FK geometry across equivalent standalone and expanded URDFs."""
+        def components(values):
+            # Ignore insignificant differences in floating-point transforms.
+            return [round(float(value) * 10**12) for value in values.flat]
+
+        geometry = [(index, components(origin), None if axis is None else components(axis))
+                    for origin, axis, index in self.chain]
+        return hashlib.sha256(json.dumps(geometry, separators=(',', ':')).encode('ascii')).hexdigest()
 
     def jacobian(self, q):
         """Return the 6×6 TCP geometric Jacobian in the base frame (linear, angular)."""

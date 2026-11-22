@@ -8,6 +8,7 @@ from std_srvs.srv import Trigger
 from std_srvs.srv import SetBool, Empty
 from piper_servo_tracking.msg import GamepadInput
 from piper_servo_tracking.srv import SelectGamepadControl
+from .core import ControlSelection
 
 
 class GamepadBridge(Node):
@@ -73,10 +74,7 @@ class GamepadBridge(Node):
         return future
 
     def select_control(self,control_mode,joint_index,callback=None):
-        if control_mode not in ('single_axis','cartesian'):
-            raise ValueError('未知手柄控制方式')
-        if isinstance(joint_index,bool) or not isinstance(joint_index,int) or not 1<=joint_index<=6:
-            raise ValueError('关节编号必须在 1 到 6 之间')
+        ControlSelection.validate_choice(control_mode, joint_index)
         if not self.selection_client.service_is_ready():
             self.last_reply='控制选择服务尚未就绪'
             if callback: callback(False,self.last_reply)

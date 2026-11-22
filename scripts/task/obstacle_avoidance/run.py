@@ -65,7 +65,7 @@ def main(argv=None, *, client_type=None, runtime_type=None, task_type=None):
         if client: client.cancel_requested.set()
     try:
         for sig in handlers: signal.signal(sig, stop)
-        client = (client_type or PlanningClient)(config['settings'], config['points'][0]['joints_rad'])
+        client = (client_type or PlanningClient)(config['settings'], config['points'][0].get('joints_rad'))
         for sig in handlers: signal.signal(sig, stop)
         if shutdown: raise InterruptedError('Startup cancelled')
         runtime = (runtime_type or PreviewRuntime)(client, ROOT, log.directory)

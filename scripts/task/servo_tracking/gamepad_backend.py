@@ -1,4 +1,4 @@
-"""Backend-owned single-joint and base-frame TCP velocity teleoperation."""
+"""Backend-owned joint and base-frame TCP velocity teleoperation."""
 import json
 import os
 import sys
@@ -19,7 +19,8 @@ from piper_servo_tracking.srv import SelectGamepadControl, PlanJointTarget
 from .core import JOINTS, FreshJoints, RobotModel, load_config, damped_joint_velocity, joint_speed_limits
 from .stop_observer import StopObserver
 from scripts.tools.gamepad_control.core import (
-    InputFrame, InputGate, map_velocity, map_single_axis_velocity, input_is_neutral,
+    CONTROL_MODE_LABELS, CONTROL_MODES, SELECTABLE_AXES,
+    InputFrame, InputGate, map_velocity, map_single_axis_velocity, map_cartesian_axis_velocity, input_is_neutral,
     ControlState, ControlSelection, VelocityIntentFilter, stop_confirmed_for_generation,
     home_input_neutral)
 from scripts.tools.gamepad_control.motion import limit_joint_velocity
@@ -45,7 +46,7 @@ class GamepadBackend(Node):
         self.requested_joint_velocity = self.filtered_joint_velocity = (0.,)*6
         self.bound_scale = 1.
         self.selection = ControlSelection(speed_scales={
-            name: self.gp['default_speed_scale'] for name in ('single_axis', 'cartesian')})
+            name: self.gp['default_speed_scale'] for name in CONTROL_MODES})
         self.selection_observer = StopObserver(self.gp['stop_settle_window_s'], self.gp['stop_joint_span_rad'])
         self.model = RobotModel(self.get_parameter('robot_description').value)
         self.feedback = FreshJoints()
@@ -131,13 +132,13 @@ class GamepadBackend(Node):
             return False
         return self.selection_observer.confirmed(now, self.config['feedback_timeout'])
 
-    def _apply_selection(self, control_mode, joint_index, allow_navigation=False):
+    def _apply_selection(self, control_mode, axis_index, allow_navigation=False):
         try:
-            ControlSelection._validate(control_mode, joint_index)
+            ControlSelection.validate_choice(control_mode, axis_index)
             if not self._selection_ready(allow_navigation):
-                return False, '请等待停稳，松开 LB/B 并让摇杆回中后切换'
-            if not self.selection.select(control_mode, joint_index):
-                return True, '当前已选择该模式和关节'
+                return False, '请等待停稳，松开 LB/B/Y 并让摇杆回中后切换'
+            if not self.selection.select(control_mode, axis_index):
+                return True, '当前选择已生效'
         except ValueError as exc:
             return False, str(exc)
         self.epoch += 1
@@ -147,11 +148,13 @@ class GamepadBackend(Node):
         self.control.start()
         if self.phase == 'WAITING':
             self.control = ControlState(self.gp['neutral_dwell_s'], self.gp['deadzone'])
-        label = f'单轴控制 · J{joint_index}' if control_mode == 'single_axis' else '笛卡尔控制 · 基座坐标系'
-        self.reason = label + '；松开方向键并回中后重新按 LB'
+        axes = SELECTABLE_AXES.get(control_mode)
+        axis_label = axes[axis_index-1] if axes else '基座坐标系'
+        self.reason = f'{CONTROL_MODE_LABELS[control_mode]} · {axis_label}。松开方向键并回中后重新按 LB'
         return True, self.reason
 
     def select_control(self, request, response):
+        # The existing wire field carries a per-mode 1-based axis index.
         response.success, response.message = self._apply_selection(request.control_mode, request.joint_index)
         response.revision = self.selection.revision
         self.publish_status()
@@ -276,13 +279,14 @@ class GamepadBackend(Node):
                 else:
                     self.reason = '请先松开 LB/Y 并让摇杆回中，再按住 LB + Y'
             return
-        if self.selection.control_mode == 'single_axis' and dpad_was_released and sum(frame.dpad) == 1:
+        mode = self.selection.control_mode
+        if mode in SELECTABLE_AXES and dpad_was_released and sum(frame.dpad) == 1:
             up, down, left, right = frame.dpad
-            row, column = divmod(self.selection.joint_index - 1, 3)
+            row, column = divmod(self.selection.axis_index - 1, 3)
             row += down - up
             column += right - left
             if 0 <= row < 2 and 0 <= column < 3:
-                self._apply_selection('single_axis', row * 3 + column + 1, allow_navigation=True)
+                self._apply_selection(mode, row * 3 + column + 1, allow_navigation=True)
         if self.phase in ('ACTIVE','PREPARING'):
             if not frame.lb:
                 self._begin_stop('ARMED','已松开 LB，等待停稳确认')
@@ -582,9 +586,17 @@ class GamepadBackend(Node):
                     velocity = self.intent_filter.update(target, now)
                     self.filtered_joint_velocity = velocity
                 else:
-                    twist=map_velocity(self.input, self.speed_scale,
-                        self.gp['deadzone'], self.gp['linear_speed_max'],
-                        self.gp['angular_speed_max'], self.gp['dpad_scale'], self.gp['response_exponent'])
+                    if self.selection.control_mode == 'cartesian_axis':
+                        twist = map_cartesian_axis_velocity(self.input, self.selection.cartesian_axis_index,
+                            self.speed_scale, self.gp['deadzone'], self.gp['linear_speed_max'],
+                            self.gp['angular_speed_max'], self.gp['response_exponent'])
+                        if not any(twist):
+                            self._publish_zero()
+                            return
+                    else:
+                        twist = map_velocity(self.input, self.speed_scale,
+                            self.gp['deadzone'], self.gp['linear_speed_max'], self.gp['angular_speed_max'],
+                            self.gp['dpad_scale'], self.gp['response_exponent'])
                     self.requested_tcp_velocity = twist
                     twist=self.intent_filter.update(twist, now)
                     self.filtered_tcp_velocity = twist
@@ -604,6 +616,7 @@ class GamepadBackend(Node):
     def publish_status(self):
         now=time.monotonic(); data={'mode':self.mode,'state':self.phase,'reason':self.reason,
             'control_mode':self.selection.control_mode,'selected_joint':self.selection.joint_index,
+            'selected_cartesian_axis':self.selection.cartesian_axis_index,
             'selection_revision':self.selection.revision,'selection_ready':self._selection_ready(),
             'speed_scales':dict(self.selection.speed_scales),'dpad_scale':self.gp['dpad_scale'],
             'joint_limits_rad':{'lower':self.model.lower.tolist(),'upper':self.model.upper.tolist()},

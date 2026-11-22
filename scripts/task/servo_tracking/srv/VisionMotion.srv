@@ -1,5 +1,10 @@
 uint64 stop_generation
 bool enable
+bool commit
+uint64 preparation_epoch
+float64 valid_until
+float64[6] checked_joints
 ---
 bool success
+bool retry
 string message

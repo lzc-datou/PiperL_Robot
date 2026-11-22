@@ -4,7 +4,7 @@ from math import degrees, isfinite
 from PyQt5 import QtCore, QtGui, QtWidgets
 from scripts.tools.ui.theme import StatusIndicator, action_icon, apply_theme
 from .gamepad_widget import DiagnosticTable, GamepadWidget, MappingCard, ModeButton, SessionStatus
-from .core import stop_confirmed_for_generation
+from .core import CARTESIAN_AXES, CONTROL_MODE_LABELS, CONTROL_MODES, SELECTABLE_AXES, stop_confirmed_for_generation
 from .settings import load_tool_config
 
 HOME_STATES=('HOME_ARMING','HOME_PLANNING','HOMING')
@@ -44,10 +44,11 @@ class GamepadWindow(QtWidgets.QWidget):
         self.reply_error=None
         self.stack_failure = ''
         self.next_diagnostic_update = 0.0
-        self.control_mode='single_axis'; self.selected_joint=1
+        self.control_mode = 'single_axis'
+        self.selected_joint = self.selected_cartesian_axis = 1
         self.selection_request_pending=False
         if mode == 'demo' and bridge is None:
-            self.demo_speeds = dict.fromkeys(('single_axis', 'cartesian'), self.config['default_speed_scale'])
+            self.demo_speeds = dict.fromkeys(CONTROL_MODES, self.config['default_speed_scale'])
         label={'demo':'离线演示 · 不连接机械臂','input':'输入检查 · 不连接机械臂',
                'sim':'仿真 · 不连接实机','real':'实机 · 手动使能'}[mode]
         self.setWindowTitle('PiPER-L · 手柄控制 · '+label)
@@ -85,9 +86,9 @@ class GamepadWindow(QtWidgets.QWidget):
         tabs.setContentsMargins(0, 0, 0, 0)
         tabs.setSpacing(4)
         self.mode_buttons = {}
-        for key, name in (('single_axis', '单轴控制'), ('cartesian', '笛卡尔控制')):
+        for key, name in CONTROL_MODE_LABELS.items():
             button = ModeButton(name)
-            button.clicked.connect(lambda checked, k=key: self._select_control(k, self.selected_joint))
+            button.clicked.connect(lambda checked, k=key: self._select_control(k))
             tabs.addWidget(button)
             self.mode_buttons[key] = button
         bar.addWidget(self.selection_panel)
@@ -161,8 +162,7 @@ class GamepadWindow(QtWidgets.QWidget):
             self.feedback_state.setText('示例数据')
             for label, value in zip(self.joint_values, (0, 80.214, -68.755, 17.189, 57.296, 0)):
                 label.setText(f'{value:.3f}')
-            for label, value in zip(self.pose_values, (248.6, -32.4, 306.8, 2.1, -14.3, 35.0)):
-                label.setText(f'{value:.1f}')
+            self._render_pose_values((248.6, -32.4, 306.8, 2.1, -14.3, 35.0))
         self._refresh_controls()
         self._render_selection({})
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
@@ -185,59 +185,70 @@ class GamepadWindow(QtWidgets.QWidget):
         layout.addLayout(heading)
         self.motion_panel = QtWidgets.QStackedWidget()
         layout.addWidget(self.motion_panel, 1)
-        self.joint_buttons = []
-        self.joint_values = []
-        self.pose_values = []
-        for single in (True, False):
-            page = QtWidgets.QWidget()
-            self.motion_panel.addWidget(page)
-            grid = QtWidgets.QGridLayout(page)
-            grid.setContentsMargins(0, 0, 0, 0)
-            grid.setSpacing(8)
-            if single:
-                self.joint_panel = page
-                names = [f'J{i}' for i in range(1, 7)]
-            else:
-                names = ['X', 'Y', 'Z', 'Roll', 'Pitch', 'Yaw']
-                grid.addWidget(QtWidgets.QLabel('位置（mm）', objectName='caption'), 0, 0, 1, 3)
-                grid.addWidget(QtWidgets.QLabel('姿态（°）', objectName='caption'), 2, 0, 1, 3)
-            for index, name in enumerate(names):
-                if single:
-                    tile = QtWidgets.QPushButton(objectName='jointTile')
-                    tile.setCheckable(True)
-                    tile.setAccessibleName('选择关节 ' + name)
-                    tile.clicked.connect(lambda checked, n=index+1: self._select_control('single_axis', n))
-                    self.joint_buttons.append(tile)
-                else:
-                    tile = QtWidgets.QFrame(objectName='readout')
-                tile.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Expanding)
-                tile.setMinimumHeight(82)
-                content = QtWidgets.QVBoxLayout(tile)
-                content.setContentsMargins(10, 6, 10, 8)
-                content.setSpacing(2)
-                top = QtWidgets.QHBoxLayout()
-                title = QtWidgets.QLabel(name, objectName='axisName')
-                top.addWidget(title)
-                top.addStretch()
-                content.addLayout(top)
-                value = NumericReading(name, '-180.000' if single else '-1000.0')
-                content.addWidget(value, 1)
-                if single:
-                    mark = QtWidgets.QLabel('✓', objectName='tileMark')
-                    top.addWidget(mark)
-                    mark.hide()
-                    for child in (title, value, mark):
-                        child.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
-                    tile.toggled.connect(lambda checked, labels=(title, value, mark):
-                                         self._mark_selected(checked, labels))
-                    self.joint_values.append(value)
-                else:
-                    self.pose_values.append(value)
-                row = index // 3 if single else 1 + 2 * (index // 3)
-                grid.addWidget(tile, row, index % 3)
-                grid.setRowStretch(row, 1)
-                grid.setColumnStretch(index % 3, 1)
+        self.joint_panel, self.joint_values, self.joint_buttons = self._build_feedback_page('single_axis')
+        self.pose_panel, self.pose_values, _ = self._build_feedback_page('cartesian')
+        self.cartesian_axis_panel, self.cartesian_axis_values, self.cartesian_axis_buttons = (
+            self._build_feedback_page('cartesian_axis'))
+        self.motion_pages = {
+            'single_axis': self.joint_panel,
+            'cartesian': self.pose_panel,
+            'cartesian_axis': self.cartesian_axis_panel,
+        }
+        self.axis_buttons = {'single_axis': self.joint_buttons, 'cartesian_axis': self.cartesian_axis_buttons}
         return card
+
+    def _build_feedback_page(self, mode):
+        page = QtWidgets.QWidget()
+        self.motion_panel.addWidget(page)
+        grid = QtWidgets.QGridLayout(page)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(8)
+        buttons, readings = [], []
+        selectable = mode in SELECTABLE_AXES
+        joint = mode == 'single_axis'
+        if not selectable:
+            grid.addWidget(QtWidgets.QLabel('位置（mm）', objectName='caption'), 0, 0, 1, 3)
+            grid.addWidget(QtWidgets.QLabel('姿态（°）', objectName='caption'), 2, 0, 1, 3)
+        for index, name in enumerate(SELECTABLE_AXES.get(mode, CARTESIAN_AXES)):
+            if selectable:
+                tile = QtWidgets.QPushButton(objectName='jointTile')
+                tile.setCheckable(True)
+                tile.setAccessibleName(('选择关节 ' if joint else '选择笛卡尔轴 ') + name)
+                tile.clicked.connect(lambda checked, n=index+1: self._select_control(mode, n))
+                buttons.append(tile)
+            else:
+                tile = QtWidgets.QFrame(objectName='readout')
+            tile.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Expanding)
+            tile.setMinimumHeight(82)
+            content = QtWidgets.QVBoxLayout(tile)
+            content.setContentsMargins(10, 6, 10, 8)
+            content.setSpacing(2)
+            top = QtWidgets.QHBoxLayout()
+            title = QtWidgets.QLabel(name, objectName='axisName')
+            top.addWidget(title)
+            top.addStretch()
+            content.addLayout(top)
+            value = NumericReading(name, '-180.000' if joint else '-1000.0')
+            content.addWidget(value, 1)
+            readings.append(value)
+            if selectable:
+                labels = [title, value]
+                if not joint:
+                    unit = QtWidgets.QLabel('mm' if index < 3 else '°', objectName='caption')
+                    top.insertWidget(1, unit)
+                    labels.append(unit)
+                mark = QtWidgets.QLabel('✓', objectName='tileMark')
+                top.addWidget(mark)
+                mark.hide()
+                labels.append(mark)
+                for label in labels:
+                    label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+                tile.toggled.connect(lambda checked, labels=labels: self._mark_selected(checked, labels))
+            row = index // 3 if selectable else 1 + 2 * (index // 3)
+            grid.addWidget(tile, row, index % 3)
+            grid.setRowStretch(row, 1)
+            grid.setColumnStretch(index % 3, 1)
+        return page, readings, buttons
 
     @staticmethod
     def _mark_selected(checked, labels):
@@ -297,6 +308,8 @@ class GamepadWindow(QtWidgets.QWidget):
         super().resizeEvent(event)
         width = event.size().width()
         row, column = QtWidgets.QBoxLayout.LeftToRight, QtWidgets.QBoxLayout.TopToBottom
+        for button in self.mode_buttons.values():
+            button.setFixedWidth(112 if width < 690 else 132)
         self.workspace.setDirection(column if width < 900 else row)
         self.details_layout.setDirection(column if width < 760 else row)
         self.session_layout.setDirection(column if width < 760 else row)
@@ -324,7 +337,7 @@ class GamepadWindow(QtWidgets.QWidget):
         if not self.details_panel.isVisible() or now < self.next_diagnostic_update:
             return
         self.next_diagnostic_update = now + 0.2
-        self.pad.set_control(None if self.mode == 'input' else self.control_mode, self.selected_joint)
+        self.pad.set_control(None if self.mode == 'input' else self.control_mode, self.selected_axis_name)
         self.pad.set_frame(frame)
         values = {}
         if frame:
@@ -355,7 +368,7 @@ class GamepadWindow(QtWidgets.QWidget):
                 '输入延迟（秒）': f'{age:.3f}' if age is not None and isfinite(age) else None,
                 '连接失联验证': status.get('link_verified'), '输入错误': status.get('input_error'),
                 '控制状态': status.get('state'), '控制方式': status.get('control_mode'),
-                '当前关节': status.get('selected_joint'), '选择版本': status.get('selection_revision'),
+                '当前选轴': self.selected_axis_name, '选择版本': status.get('selection_revision'),
                 '方向受限': status.get('joint_bound_limited', False), 'Guard 状态': guard.get('state'),
                 '运动门关闭': guard.get('gate_closed'), '停稳确认': guard.get('stop_confirmed'),
                 '回零确认进度': f'{progress:.0%}' if progress is not None and isfinite(progress) else None,
@@ -365,7 +378,7 @@ class GamepadWindow(QtWidgets.QWidget):
             })
         else:
             values.update({'运行环境': self.mode, '控制状态': self.state,
-                           '控制方式': self.control_mode, '当前关节': self.selected_joint})
+                           '控制方式': self.control_mode, '当前选轴': self.selected_axis_name})
         self.diag.display(values)
 
     def _speed_changed(self,value):
@@ -384,7 +397,7 @@ class GamepadWindow(QtWidgets.QWidget):
         if homing:
             self.speed_caption.setText('回零速度')
             self.speed_label.setText('10%')
-            self.speed_label.setToolTip('回零使用独立规划比例；两模式速度滑条不参与。')
+            self.speed_label.setToolTip('回零使用独立的规划速度比例。')
             return
         limits=status.get('speed_limits',{})
         linear=limits.get('linear_m_s',self.config['linear_speed_max'])*1000*value/100
@@ -392,26 +405,43 @@ class GamepadWindow(QtWidgets.QWidget):
         joint=degrees(limits.get('joint_rad_s',self.config['joint_speed']))*value/100
         self.speed_caption.setText('速度比例')
         self.speed_label.setText(f'{value}%')
-        tip=(f'J{self.selected_joint} 软件指令上限 {joint:.1f}°/s。' if self.control_mode=='single_axis' else
-             f'平移上限 {linear:g} mm/s，旋转上限 {angular:.1f}°/s，方向键使用 {status.get("dpad_scale",self.config["dpad_scale"]):.0%} 旋转比例。')
-        self.speed_label.setToolTip(tip+' 不是实际运动速度。松开 LB/B/Y 后调节。')
+        if self.control_mode == 'single_axis':
+            tip = f'{self.selected_axis_name} 软件指令上限 {joint:.1f}°/s。'
+        elif self.control_mode == 'cartesian_axis':
+            limit = f'{linear:g} mm/s' if self.selected_cartesian_axis <= 3 else f'{angular:.1f}°/s'
+            tip = f'{self.selected_axis_name} 软件指令上限 {limit}。'
+        else:
+            dpad_scale = status.get('dpad_scale', self.config['dpad_scale'])
+            tip = f'平移上限 {linear:g} mm/s，旋转上限 {angular:.1f}°/s，方向键使用 {dpad_scale:.0%} 旋转比例。'
+        self.speed_label.setToolTip(tip + ' 松开 LB/B/Y 后调节。')
+
+    def _selected_axis_index(self, mode):
+        return self.selected_cartesian_axis if mode == 'cartesian_axis' else self.selected_joint
+
+    @property
+    def selected_axis_name(self):
+        axes = SELECTABLE_AXES.get(self.control_mode)
+        return axes[self._selected_axis_index(self.control_mode)-1] if axes else None
 
     def _render_selection(self,status):
         control_mode=status.get('control_mode',self.control_mode)
-        if control_mode in ('single_axis','cartesian'):
+        if control_mode in CONTROL_MODES:
             self.control_mode=control_mode
-        joint=status.get('selected_joint',self.selected_joint)
-        if isinstance(joint,int) and not isinstance(joint,bool) and 1<=joint<=6:
-            self.selected_joint=joint
+        for key in ('selected_joint', 'selected_cartesian_axis'):
+            axis = status.get(key)
+            if type(axis) is int and 1 <= axis <= 6:
+                setattr(self, key, axis)
         single=self.control_mode=='single_axis'
         for mode,button in self.mode_buttons.items():
             button.setChecked(mode==self.control_mode)
-        for index,button in enumerate(self.joint_buttons,1):
-            button.setChecked(index==self.selected_joint)
+        for mode, buttons in self.axis_buttons.items():
+            for index, button in enumerate(buttons, 1):
+                button.setChecked(index == self._selected_axis_index(mode))
         self.frame_label.setText('单位 °' if single else '基座坐标系 · base_link')
         self.feedback_title.setText('关节角度' if single else '末端位姿')
-        self.mapping.set_mode(single)
-        self.motion_panel.setCurrentIndex(0 if single else 1)
+        axis = self.selected_axis_name if self.control_mode == 'cartesian_axis' else None
+        self.mapping.set_mode(self.control_mode in SELECTABLE_AXES, axis)
+        self.motion_panel.setCurrentWidget(self.motion_pages[self.control_mode])
         scale=status.get('speed_scale')
         if self.mode == 'demo' and self.bridge is None:
             scale = self.demo_speeds[self.control_mode]
@@ -419,16 +449,23 @@ class GamepadWindow(QtWidgets.QWidget):
             self.speed.blockSignals(True); self.speed.setValue(round(float(scale)*100)); self.speed.blockSignals(False)
         self._render_speed(self.speed.value())
 
-    def _select_control(self,control_mode,joint_index):
-        if control_mode==self.control_mode and joint_index==self.selected_joint:
+    def _select_control(self, control_mode, axis_index=None):
+        selected = self._selected_axis_index(control_mode)
+        if axis_index is None:
+            axis_index = selected
+        if control_mode == self.control_mode and axis_index == selected:
             self._render_selection(self.bridge.status if self.bridge else {})
             return
         if self.bridge:
             self.reply_error=None; self.selection_request_pending=True
-            future=self.bridge.select_control(control_mode,joint_index,self._selection_reply)
+            future=self.bridge.select_control(control_mode,axis_index,self._selection_reply)
             if future is None: self.selection_request_pending=False
         else:
-            self.control_mode=control_mode; self.selected_joint=joint_index
+            self.control_mode = control_mode
+            if control_mode == 'cartesian_axis':
+                self.selected_cartesian_axis = axis_index
+            else:
+                self.selected_joint = axis_index
         # Checked buttons always follow the latest backend snapshot.
         self._render_selection(self.bridge.status if self.bridge else {})
         self._refresh_controls()
@@ -497,25 +534,32 @@ class GamepadWindow(QtWidgets.QWidget):
         self.speed.setEnabled(state in ('WAITING','ARMED') and self._input_released())
         choose=(state in ('WAITING','ARMED') and self._input_released(neutral=True) and
                 (not self.bridge or bool(status.get('selection_ready'))) and not self.selection_request_pending)
-        for button in (*self.mode_buttons.values(),*self.joint_buttons):
+        selection_buttons = (*self.mode_buttons.values(), *self.joint_buttons, *self.cartesian_axis_buttons)
+        for button in selection_buttons:
             button.setEnabled(choose)
-            button.setToolTip('停稳后，松开 LB/B/Y 并让摇杆、方向键回中，再选择控制方式或关节。')
+            button.setToolTip('停稳后，松开 LB/B/Y 并让摇杆、方向键回中，再切换模式或选轴。')
         self.stop.setEnabled(state!='WAITING' or bool(self.bridge))
         if self.close_requested_at is not None:
             for widget in (self.start,self.end,self.recover,self.speed): widget.setEnabled(False)
-            for button in (*self.mode_buttons.values(),*self.joint_buttons): button.setEnabled(False)
+            for button in selection_buttons: button.setEnabled(False)
+
+    def _render_pose_values(self, values):
+        for readout, tile, value in zip(self.pose_values, self.cartesian_axis_values, values):
+            text = f'{value:.1f}' if isfinite(value) else '—'
+            readout.setText(text)
+            tile.setText(text)
 
     def _render_feedback(self,status):
         snapshot=status.get('feedback')
         age=max(snapshot.get('age_s',999.), time.time()-snapshot.get('source_stamp',0.)) if snapshot else float('inf')
         if not snapshot or age>.25:
-            for value in (*self.joint_values,*self.pose_values): value.setText('—')
+            self._render_pose_values((float('nan'),)*6)
+            for value in self.joint_values: value.setText('—')
             self.feedback_state.set_online(False)
             self.feedback_state.setToolTip('未收到新鲜反馈')
             self.feedback_state.setText('反馈中断'); return
         xyz=snapshot['xyz_m']; rpy=snapshot['rpy_rad']
-        for label,value in zip(self.pose_values,(*[v*1000 for v in xyz],*[degrees(v) for v in rpy])):
-            label.setText(f'{value:.1f}' if isfinite(value) else '—')
+        self._render_pose_values((*[v*1000 for v in xyz], *[degrees(v) for v in rpy]))
         joints=snapshot.get('joints_rad',[])
         for index,label in enumerate(self.joint_values):
             value=joints[index] if len(joints)==6 else None

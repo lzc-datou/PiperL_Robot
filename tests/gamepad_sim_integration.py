@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Two-mode acceptance against isolated ROS mock/Servo/guard; never a real driver.
+"""Gamepad acceptance against isolated ROS mock/Servo/guard; never a real driver.
 
 Run through scripts/piperl/run.sh with an unused non-default ROS domain. Results
 and owned-process cleanup reports are kept in a unique outputs directory.
@@ -31,6 +31,7 @@ from trajectory_msgs.msg import JointTrajectory
 from piper_servo_tracking.msg import GamepadInput
 from piper_servo_tracking.srv import SelectGamepadControl
 from scripts.task.servo_tracking.core import JOINTS, RobotModel
+from scripts.tools.gamepad_control.core import CARTESIAN_AXES, CONTROL_MODES
 from scripts.tools.gamepad_control.stack_supervisor import start_stack, stop_stack
 
 DOMAIN = os.environ.get('ROS_DOMAIN_ID', '43')
@@ -91,7 +92,7 @@ class Probe(Node):
             self.ui.publish(Float64(data=time.time())); self.last_ui = now
         if self.publish_fixture:
             msg = GamepadInput(); msg.header.stamp = self.get_clock().now().to_msg()
-            msg.guid = 'two-mode-integration-fixture'; msg.source = 'fixture'
+            msg.guid = 'gamepad-integration-fixture'; msg.source = 'fixture'
             msg.device_name = 'isolated mock fixture'; msg.connection_type = 'fixture'
             self.sequence += 1
             msg.generation = 1; msg.sequence = self.sequence; msg.connected = True
@@ -135,13 +136,16 @@ class Probe(Node):
             raise AssertionError(f'{name}: {response.success}, {response.message}')
         return response.message
 
-    def select(self, mode, joint, expect_success=True):
-        response = self.service(self.selection_client, SelectGamepadControl.Request(control_mode=mode, joint_index=joint))
+    def select(self, mode, axis=None, expect_success=True):
+        field = 'selected_cartesian_axis' if mode == 'cartesian_axis' else 'selected_joint'
+        if axis is None:
+            axis = self.backend[field]
+        response = self.service(self.selection_client, SelectGamepadControl.Request(control_mode=mode, joint_index=axis))
         if bool(response.success) != expect_success:
-            raise AssertionError(f'select {mode}/J{joint}: {response.success}, {response.message}')
+            raise AssertionError(f'select {mode}/{axis}: {response.success}, {response.message}')
         if expect_success:
             self.wait_for(lambda: self.backend.get('control_mode') == mode and
-                          self.backend.get('selected_joint') == joint and
+                          self.backend.get(field) == axis and
                           self.backend.get('selection_revision') == response.revision, 2., 'selection ack snapshot')
         return response
 
@@ -219,6 +223,7 @@ def ready(probe):
 
 def measure_direction(probe, model, name, axes, dpad, axis, sign, single=False):
     probe.activate(axes, dpad)
+    mode = probe.backend['control_mode']
     started = time.monotonic(); q0 = probe.joints[-1][1].copy()
     probe.dwell(.30)
     require(probe.backend.get('state') == 'ACTIVE', f'{name}: lost active session')
@@ -247,9 +252,10 @@ def measure_direction(probe, model, name, axes, dpad, axis, sign, single=False):
     else:
         twist = model.jacobian(q0) @ jog
         require(sign*twist[axis] > 1e-5, f'{name}: wrong Jacobian velocity sign {twist}')
-        requested = probe.backend['requested_tcp_velocity']
-        require(sign*requested[axis] > 0. and all(v == 0. for i, v in enumerate(requested) if i != axis),
-                f'{name}: wrong base-frame request {requested}')
+        for field in ('requested_tcp_velocity', 'filtered_tcp_velocity'):
+            intent = probe.backend[field]
+            require(sign*intent[axis] > 0. and all(v == 0. for i, v in enumerate(intent) if i != axis),
+                    f'{name}: wrong {field} {intent}')
         p0, p1 = model.pose(q0), model.pose(q1)
         delta = np.r_[p1[:3]-p0[:3],
                       (Rotation.from_quat(p1[3:])*Rotation.from_quat(p0[3:]).inv()).as_rotvec()]
@@ -262,7 +268,7 @@ def measure_direction(probe, model, name, axes, dpad, axis, sign, single=False):
         displacement = delta.tolist()
     stop_time = probe.release()
     print(f'PASS {name}', flush=True)
-    return {'direction': name, 'jog_samples': len(samples), 'median_jog_rad_s': jog.tolist(),
+    return {'mode': mode, 'direction': name, 'jog_samples': len(samples), 'median_jog_rad_s': jog.tolist(),
             'measured_delta': displacement, 'servo_samples': len(trajectories), 'release_stop_s': stop_time}
 
 
@@ -299,12 +305,41 @@ def navigation_and_switching(probe):
     quiet = time.monotonic(); q0 = probe.joints[-1][1].copy(); probe.dwell(.35)
     require(all(all(v == 0. for v in qd) for t, qd in probe.jogs if t >= quiet), 'switch replayed a Jog')
     require(np.max(np.abs(probe.joints[-1][1]-q0)) < 2e-4, 'switch moved mock without a new LB')
-    # Restore default speed in both modes for comparable direction measurements.
-    probe.speed.publish(Float64(data=.2)); probe.dwell(.15)
-    probe.neutral(); probe.select('single_axis', 1); probe.neutral()
-    probe.speed.publish(Float64(data=.2)); probe.dwell(.15)
+    probe.neutral(); probe.select('cartesian_axis')
+    axis_field = 'selected_cartesian_axis'
+    require(probe.backend[axis_field] == 1 and probe.backend['speed_scale'] == .20,
+            'Cartesian single-axis must initially select X at its own default speed')
+    for axis, dpad in ((2, (0, 0, 0, 1)), (5, (0, 1, 0, 0))):
+        probe.neutral()
+        revision = probe.backend['selection_revision']
+        probe.set_input(dpad=dpad); probe.dwell(.40)
+        require(probe.backend[axis_field] == axis and probe.backend['selection_revision'] == revision+1,
+                f'Cartesian single-axis DPad did not select and hold {CARTESIAN_AXES[axis-1]}')
+    probe.neutral(); probe.speed.publish(Float64(data=.15)); probe.dwell(.20)
+    probe.activate((0., -.65, 0., 0.))
+    revision = probe.backend['selection_revision']
+    probe.select('single_axis', 1, expect_success=False)
+    probe.set_input(axes=(.55, -.65, -.75, .55), dpad=(0, 0, 0, 1), lb=True); probe.dwell(.20)
+    twist = probe.backend['requested_tcp_velocity']
+    require(probe.backend[axis_field] == 5 and probe.backend['selection_revision'] == revision
+            and twist[4] > 0 and sum(v != 0. for v in twist) == 1, 'held LB or other controls changed Pitch jog')
+    centered = time.monotonic()
+    probe.set_input(axes=(.55, 0., -.75, .55), dpad=(0, 0, 0, 1), lb=True)
+    probe.wait_for(lambda: probe.jog == ZERO, .12, 'centered vertical stick emits zero Jog while holding LB')
+    probe.dwell(.20)
+    require(probe.backend['state'] == 'ACTIVE' and probe.backend['filtered_tcp_velocity'] == list(ZERO)
+            and all(qd == ZERO for t, qd in probe.jogs if t >= centered+.12),
+            'stick center retained velocity or canceled LB permit')
+    probe.release()
+    for mode, scale in (('single_axis', .25), ('cartesian', .35), ('cartesian_axis', .15)):
+        probe.neutral(); probe.select(mode)
+        require(probe.backend['speed_scale'] == scale, f'{mode} did not remember its speed')
+        require(probe.backend[axis_field] == 5 and probe.backend['selected_joint'] == 1,
+                'switching modes lost one of the selections')
+        probe.speed.publish(Float64(data=.20)); probe.dwell(.20)
     return {'navigation_edges': True, 'no_wrap': True, 'active_selection_rejected': True,
-            'independent_speeds': True, 'switch_quiet_feedback': True}
+            'independent_speeds': True, 'switch_quiet_feedback': True,
+            'cartesian_axis_memory': True, 'cartesian_axis_centered_zero': True}
 
 
 def lock_and_dropout(probe, mode):
@@ -367,9 +402,11 @@ def run_stack(logs, summary, callback, config=None):
 
 def main():
     require(DOMAIN.isdigit() and 0 <= int(DOMAIN) <= 232 and DOMAIN != '43', 'use an unused non-default ROS domain')
-    lockfile = open(f'/tmp/piperl_gamepad_mock_domain_{DOMAIN}.lock', 'w')
+    outputs = ROOT/'outputs/gamepad_control'
+    outputs.mkdir(parents=True, exist_ok=True)
+    lockfile = (outputs/f'mock_domain_{DOMAIN}.lock').open('a')
     fcntl.flock(lockfile, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    logs = ROOT/'outputs/gamepad_control'/f'two_modes_{time.strftime("%Y%m%d_%H%M%S")}_d{DOMAIN}_{os.getpid()}'
+    logs = outputs/f'three_modes_{time.strftime("%Y%m%d_%H%M%S")}_d{DOMAIN}_{os.getpid()}'
     logs.mkdir(parents=True)
     summary = {'domain': DOMAIN, 'fixture_only': True, 'real_hardware': False, 'passed': False,
                'logs': str(logs), 'directions': []}
@@ -398,10 +435,15 @@ def main():
                     if axis == 4 and sign < 0: opposite = (0, 1, 0, 0)
                     summary['directions'].append(measure_direction(probe, model, f'{name}{sign:+}',
                         tuple(sign*v for v in axes), opposite, axis, sign))
+            for axis, name in enumerate(CARTESIAN_AXES, 1):
+                for sign in (1, -1):
+                    probe.neutral(); probe.select('cartesian_axis', axis)
+                    summary['directions'].append(measure_direction(probe, model, f'{name} single-axis {sign:+}',
+                        (0., -.65*sign, 0., 0.), (0,)*4, axis-1, sign))
             probe.neutral(); probe.select('single_axis', 2)
             summary['cartesian_to_single_axis'] = measure_direction(probe, model,
                 'Cartesian-to-J2 switch', (0., -.65, 0., 0.), (0,)*4, 1, 1, single=True)
-            summary['stops'] = [lock_and_dropout(probe, mode) for mode in ('single_axis', 'cartesian')]
+            summary['stops'] = [lock_and_dropout(probe, mode) for mode in CONTROL_MODES]
             summary['boundary_upper'] = probe.backend['joint_limits_rad']['upper'][0]
             probe.call('stop')
             probe.wait_for(lambda: probe.guard.get('stop_confirmed'), 5., 'final stop')

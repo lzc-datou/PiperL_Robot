@@ -292,6 +292,37 @@ class JointAngleReaderTests(unittest.TestCase):
             self.assertEqual(mask & 0xC00007FF, 0xC00007FF)
         self.assertTrue(all(call[1] == 16 for call in transport.calls if call[0] == "recv"))
 
+    def test_default_cli_shows_local_pose_from_complete_can_frames(self):
+        clock = FakeClock()
+        transport = ReceiveOnlySocket(clock, [
+            position_frame(0x2A5, 0, 0),
+            position_frame(0x2A6, 0, 0),
+            position_frame(0x2A7, 0, 0),
+        ])
+        self.real_socket.side_effect = None
+        self.real_socket.return_value = transport
+        with patch.object(self.tool, "time", clock), patch("sys.stdin.isatty", return_value=False), \
+                patch("scripts.tools.monitoring.point_panel.ReadOnlyFK") as moveit, \
+                patch.object(self.tool.os, "get_terminal_size", return_value=os.terminal_size((80, 24))), \
+                redirect_stdout(TerminalOutput()) as output:
+            self.assertEqual(self.tool.main(["--seconds", "0.4", "--stale-after", "0.2"]), 0)
+        moveit.assert_not_called()
+        self.real_socket.assert_called_once_with(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
+        self.assertTrue(transport.closed)
+        rendered = output.getvalue()
+        self.assertNotIn("resize terminal", rendered)
+        self.assertIn("FK local", rendered)
+        self.assertIn("position_m: [0.073061, 0.000000, 0.227595]", rendered)
+        self.assertIn("   rpy: [0.0000, 85.0000, 0.0000]}", rendered)
+        self.assertRegex(rendered, r"orientation_xyzw: \[[^\n]+\],")
+        self.assertNotIn("XYZ (mm)", rendered)
+        self.assertNotIn("xyzrpy:", rendered)
+        self.assertIn("Position feedback stale", rendered)
+        expired = rendered.split("Piper-L  |")[-1]
+        self.assertNotIn("FK local", expired)
+        self.assertNotIn("orientation_xyzw:", expired)
+        self.assertNotIn("rpy:", expired)
+
     def test_idle_monitor_keeps_refreshing_and_exits_after_requested_duration(self):
         transport, _, output, clock = self.run_monitor(seconds=0.35)
         self.assertGreaterEqual(output.count("Piper-L  |"), 3)
