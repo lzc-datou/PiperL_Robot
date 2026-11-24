@@ -1,0 +1,26 @@
+marker_id: 100
+dictionary: null  # 填生成 100 号码时用的 OpenCV 字典名
+marker_size_mm: null  # 实测黑框外沿边长，不含白边
+
+camera_namespace: /handeye/handeye_d405
+robot_pose_topic: /piper_servo/feedback/tcp_pose
+
+capture_frames: 60
+capture_timeout_s: 8.0
+display_hz: 4.0
+max_rgb_depth_skew_ms: 12.0
+max_pose_gap_ms: 50.0
+input_wait_ms: 160.0
+
+depth:
+  min_mm: 70.0
+  max_mm: 500.0
+  scale_m_per_unit: null  # ROS 标准 16UC1 为 mm，32FC1 为 m。非标准发布者按源填写
+  pixel_stride: 3
+  inset_fraction: 0.15  # 各顶点向四边形内部收缩的比例
+  inlier_threshold_mm: 1.5
+  min_inliers: 30
+  min_inlier_ratio: 0.65
+  min_span_fraction: 0.5
+
+pnp_max_reprojection_px: 1.0

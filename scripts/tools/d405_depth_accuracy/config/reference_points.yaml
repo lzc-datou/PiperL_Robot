@@ -1,0 +1,9 @@
+marker_id: 100
+frame_id: base_link
+units: mm
+# 黑框外沿四角。左上以原码朝向为准，填写针尖 TCP 在基座系下的 XYZ。
+corners:
+  TL: [null, null, null]
+  TR: [null, null, null]
+  BR: [null, null, null]
+  BL: [null, null, null]
